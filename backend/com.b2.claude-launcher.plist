@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.b2.claude-launcher</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Volumes/b2/Developer/mine/b2-claude-launcher-telegram-bot/backend/run.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Volumes/b2/Developer/mine/b2-claude-launcher-telegram-bot/backend</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/claude-launcher.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/claude-launcher.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/b2/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+backend/.venv/
+backend/.env
+backend/sessions/
+backend/logs/
+backend/paired_users.json
+.DS_Store
+app/.dart_tool/
+app/build/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+*.iml
+.idea/
