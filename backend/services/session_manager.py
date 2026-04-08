@@ -245,17 +245,23 @@ async def start_session(project_path: str, project_name: str, name: Optional[str
 
     env_path = f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"
 
-    # Create tmux session running claude remote-control
-    cmd = f"export PATH='{env_path}'; {CLAUDE_BIN} remote-control --name '{display_name}' --spawn same-dir"
+    # Shell wrapper: redirect all output to log AND keep tmux pane alive on exit
+    # Using script + tee so output goes to both the terminal (for tmux attach) and log file
+    cmd = (
+        f"export PATH='{env_path}'; "
+        f"{CLAUDE_BIN} remote-control --name '{display_name}' --spawn same-dir 2>&1 | tee -a {log_file}; "
+        f"echo '[SESSION EXITED]' >> {log_file}; "
+        f"sleep 5"  # keep pane alive briefly so we can read exit output
+    )
 
     subprocess.run(
-        [TMUX, "new-session", "-d", "-s", tmux_name, "-c", project_path, cmd],
+        [TMUX, "new-session", "-d", "-s", tmux_name, "-c", project_path, "bash", "-c", cmd],
         capture_output=True, timeout=10,
     )
 
-    # Set up pipe-pane to capture output to log file
+    # Also set remain-on-exit so tmux session stays for inspection
     subprocess.run(
-        [TMUX, "pipe-pane", "-t", tmux_name, f"cat >> {log_file}"],
+        [TMUX, "set-option", "-t", tmux_name, "remain-on-exit", "on"],
         capture_output=True, timeout=5,
     )
 
@@ -308,7 +314,10 @@ async def trust_and_launch(project_path: str, project_name: str, name: Optional[
     """Trust a workspace via tmux, then re-launch as remote-control."""
     tmux_name = "claude-trust-tmp"
     env_path = f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"
-    cmd = f"export PATH='{env_path}'; {CLAUDE_BIN}"
+    trust_log = LOGS_DIR / "trust_tmp.log"
+    trust_log.write_text("")
+
+    cmd = f"export PATH='{env_path}'; {CLAUDE_BIN} 2>&1 | tee -a {trust_log}; sleep 3"
 
     # Kill any leftover trust session
     subprocess.run([TMUX, "kill-session", "-t", tmux_name], capture_output=True)
@@ -316,16 +325,8 @@ async def trust_and_launch(project_path: str, project_name: str, name: Optional[
 
     # Launch interactive claude in a temporary tmux session
     subprocess.run(
-        [TMUX, "new-session", "-d", "-s", tmux_name, "-c", project_path, cmd],
+        [TMUX, "new-session", "-d", "-s", tmux_name, "-c", project_path, "bash", "-c", cmd],
         capture_output=True, timeout=10,
-    )
-
-    # Capture output to a temp log
-    trust_log = LOGS_DIR / "trust_tmp.log"
-    trust_log.write_text("")
-    subprocess.run(
-        [TMUX, "pipe-pane", "-t", tmux_name, f"cat >> {trust_log}"],
-        capture_output=True, timeout=5,
     )
 
     # Monitor for trust dialog and send Enter
