@@ -21,13 +21,12 @@ TELEGRAM_ENABLED: bool = os.environ.get("TELEGRAM_ENABLED", "false").lower() == 
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 # Paths
+_default_roots = str(Path.home() / "Developer" / "mine")
 PROJECT_ROOTS: List[Path] = [
     Path(p.strip())
-    for p in os.environ.get(
-        "PROJECT_ROOTS", "/Volumes/b2/Developer/mine,/Users/b2/Developer/mine"
-    ).split(",")
+    for p in os.environ.get("PROJECT_ROOTS", _default_roots).split(",")
 ]
-CLAUDE_BIN: str = os.environ.get("CLAUDE_BIN", "/Users/b2/.local/bin/claude")
+CLAUDE_BIN: str = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local" / "bin" / "claude"))
 
 # Project detection markers
 PROJECT_MARKERS = [

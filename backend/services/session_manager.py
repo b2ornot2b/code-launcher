@@ -8,6 +8,7 @@ import re
 import subprocess
 import uuid
 from dataclasses import dataclass, asdict
+from pathlib import Path
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Optional
@@ -307,7 +308,8 @@ async def start_session(project_path: str, project_name: str, name: Optional[str
     log_file = LOGS_DIR / f"{session_id}.log"
     spawn_mode = "worktree" if experiment else "same-dir"
 
-    env_path = f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"
+    claude_dir = str(Path(CLAUDE_BIN).parent)
+    env_path = f"{claude_dir}:{os.environ.get('PATH', '')}"
 
     cmd = (
         f"export PATH='{env_path}'; "
@@ -376,7 +378,8 @@ async def respond_to_prompt(session_id: str, response: str) -> bool:
 async def trust_and_launch(project_path: str, project_name: str, name: Optional[str] = None) -> SessionInfo:
     """Trust a workspace via tmux, then re-launch as remote-control."""
     tmux_name = "claude-trust-tmp"
-    env_path = f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"
+    claude_dir = str(Path(CLAUDE_BIN).parent)
+    env_path = f"{claude_dir}:{os.environ.get('PATH', '')}"
     trust_log = LOGS_DIR / "trust_tmp.log"
     trust_log.write_text("")
 

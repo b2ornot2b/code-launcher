@@ -20,8 +20,25 @@ COMMON_DEV_DIRS = [
     Path.home() / "Projects",
     Path.home() / "code",
     Path.home() / "src",
-    Path("/Volumes/b2/Developer/mine"),
 ]
+
+# Also check mounted volumes for Developer directories
+def _discover_volume_dev_dirs() -> list:
+    """Find Developer directories on mounted volumes."""
+    found = []
+    volumes = Path("/Volumes")
+    if volumes.is_dir():
+        try:
+            for vol in volumes.iterdir():
+                if vol.is_symlink() or not vol.is_dir():
+                    continue
+                for sub in ["Developer", "Developer/mine", "Projects"]:
+                    candidate = vol / sub
+                    if candidate.is_dir():
+                        found.append(candidate)
+        except OSError:
+            pass
+    return found
 
 _settings: Dict = {}
 
@@ -75,8 +92,14 @@ def is_configured() -> bool:
 
 def detect_dev_directories() -> List[Dict]:
     """Find common dev directories that exist on this system."""
+    all_dirs = list(COMMON_DEV_DIRS) + _discover_volume_dev_dirs()
+    seen = set()
     found = []
-    for d in COMMON_DEV_DIRS:
+    for d in all_dirs:
+        resolved = str(d.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
         if d.is_dir():
             try:
                 count = sum(1 for e in d.iterdir() if e.is_dir() and not e.name.startswith("."))
