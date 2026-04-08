@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 TMUX = "/opt/homebrew/bin/tmux"
 SESSIONS_FILE = SESSIONS_DIR / "sessions.json"
+TMUX_PREFIX = "ccl-"  # Claude Code Launcher prefix for tmux sessions
 
 # Patterns that indicate Claude is waiting for user input (interactive prompts)
 PROMPT_PATTERNS = [
@@ -102,6 +103,56 @@ def _tmux_get_pane_pid(name: str) -> int:
     return 0
 
 
+def _make_tmux_name(project_name: str, session_name: Optional[str] = None) -> str:
+    """Generate tmux session name: ccl-<project>[-<name>]-<YYMMDDHHmm>"""
+    slug = re.sub(r"[^a-z0-9]+", "-", project_name.lower()).strip("-")[:20]
+    ts = datetime.utcnow().strftime("%y%m%d%H%M")
+    if session_name:
+        name_slug = re.sub(r"[^a-z0-9]+", "-", session_name.lower()).strip("-")[:15]
+        return f"{TMUX_PREFIX}{slug}-{name_slug}-{ts}"
+    return f"{TMUX_PREFIX}{slug}-{ts}"
+
+
+def cleanup_stale_tmux() -> int:
+    """Kill tmux sessions with our prefix that are dead (pane exited) or not tracked."""
+    try:
+        result = subprocess.run(
+            [TMUX, "list-sessions", "-F", "#{session_name} #{session_activity} #{?pane_dead,dead,alive}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return 0
+    except Exception:
+        return 0
+
+    tracked_tmux = {s.tmux_session for s in _sessions.values()}
+    killed = 0
+
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split(" ", 2)
+        name = parts[0]
+        status = parts[2] if len(parts) > 2 else ""
+
+        if not name.startswith(TMUX_PREFIX):
+            continue
+
+        # Kill if dead or not tracked by our session manager
+        if status == "dead" or name not in tracked_tmux:
+            try:
+                subprocess.run(
+                    [TMUX, "kill-session", "-t", name],
+                    capture_output=True, timeout=5,
+                )
+                killed += 1
+                logger.info(f"Cleaned up stale tmux session: {name}")
+            except Exception:
+                pass
+
+    return killed
+
+
 def _save_sessions() -> None:
     data = {sid: asdict(s) for sid, s in _sessions.items()}
     SESSIONS_FILE.write_text(json.dumps(data, indent=2))
@@ -134,6 +185,10 @@ def recover_sessions() -> int:
         del _sessions[sid]
     if dead:
         _save_sessions()
+    # Also clean up any orphaned tmux sessions with our prefix
+    cleaned = cleanup_stale_tmux()
+    if cleaned:
+        logger.info(f"Cleaned up {cleaned} stale tmux session(s)")
     return len(_sessions)
 
 
@@ -240,7 +295,7 @@ async def _monitor_pipe_output(session_id: str, pipe_path: str) -> None:
 async def start_session(project_path: str, project_name: str, name: Optional[str] = None) -> SessionInfo:
     session_id = uuid.uuid4().hex[:12]
     display_name = name or project_name
-    tmux_name = f"claude-{session_id}"
+    tmux_name = _make_tmux_name(project_name, name)
     log_file = LOGS_DIR / f"{session_id}.log"
 
     env_path = f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"
@@ -413,6 +468,7 @@ def list_sessions() -> list:
         del _sessions[sid]
     if dead:
         _save_sessions()
+        cleanup_stale_tmux()
     return [s.to_dict() for s in _sessions.values()]
 
 
