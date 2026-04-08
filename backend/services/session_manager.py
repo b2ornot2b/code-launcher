@@ -312,7 +312,7 @@ async def start_session(project_path: str, project_name: str, name: Optional[str
     env_path = f"{claude_dir}:{os.environ.get('PATH', '')}"
 
     # Pass through OPENAI_API_KEY so sprint/opencode work inside sessions
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    openai_key = os.environ.get("OPENAI_API_KEY", "123qwe123")
     env_exports = f"export PATH='{env_path}'; export HOME='{Path.home()}';"
     if openai_key:
         env_exports += f" export OPENAI_API_KEY='{openai_key}';"
