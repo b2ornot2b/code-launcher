@@ -4,19 +4,19 @@ import asyncio
 import json
 import logging
 import os
-import pty
 import re
-import signal
+import subprocess
 import uuid
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Optional
 
 from config import CLAUDE_BIN, SESSIONS_DIR, LOGS_DIR
 
 logger = logging.getLogger(__name__)
 
+TMUX = "/opt/homebrew/bin/tmux"
 SESSIONS_FILE = SESSIONS_DIR / "sessions.json"
 
 # Patterns that indicate Claude is waiting for user input (interactive prompts)
@@ -41,18 +41,10 @@ TRUST_ERROR = re.compile(r"Workspace not trusted", re.IGNORECASE)
 
 # In-memory session tracking
 _sessions: Dict[str, SessionInfo] = {}
-# Track PTY file descriptors for writing back responses
-_pty_masters: Dict[str, int] = {}
-# Track log file handles
-_log_handles: Dict[str, object] = {}
-# Callback for prompt notifications (set by telegram bot)
 _prompt_callback: Optional[Callable] = None
 
 
 def set_prompt_callback(callback: Callable) -> None:
-    """Register a callback for when a session blocks on a prompt.
-    Signature: callback(session_id, project_name, prompt_text)
-    """
     global _prompt_callback
     _prompt_callback = callback
 
@@ -65,12 +57,13 @@ class SessionInfo:
     pid: int
     started_at: str
     log_file: str
+    tmux_session: str = ""
     status: str = "running"  # running, blocked, dead
     blocked_prompt: str = ""
 
     def to_dict(self) -> Dict:
         d = asdict(self)
-        d["alive"] = _is_pid_alive(self.pid)
+        d["alive"] = _tmux_session_exists(self.tmux_session) if self.tmux_session else _is_pid_alive(self.pid)
         elapsed = (datetime.utcnow() - datetime.fromisoformat(self.started_at)).total_seconds()
         d["uptime_seconds"] = int(elapsed)
         return d
@@ -84,6 +77,31 @@ def _is_pid_alive(pid: int) -> bool:
         return False
 
 
+def _tmux_session_exists(name: str) -> bool:
+    try:
+        result = subprocess.run(
+            [TMUX, "has-session", "-t", name],
+            capture_output=True, timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _tmux_get_pane_pid(name: str) -> int:
+    """Get the PID of the process running in a tmux session's pane."""
+    try:
+        result = subprocess.run(
+            [TMUX, "list-panes", "-t", name, "-F", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip().split("\n")[0])
+    except Exception:
+        pass
+    return 0
+
+
 def _save_sessions() -> None:
     data = {sid: asdict(s) for sid, s in _sessions.items()}
     SESSIONS_FILE.write_text(json.dumps(data, indent=2))
@@ -95,7 +113,10 @@ def _load_sessions() -> None:
     try:
         data = json.loads(SESSIONS_FILE.read_text())
         for sid, info in data.items():
-            if _is_pid_alive(info["pid"]):
+            tmux_name = info.get("tmux_session", "")
+            if tmux_name and _tmux_session_exists(tmux_name):
+                _sessions[sid] = SessionInfo(**info)
+            elif _is_pid_alive(info.get("pid", 0)):
                 _sessions[sid] = SessionInfo(**info)
     except (json.JSONDecodeError, KeyError, TypeError):
         pass
@@ -103,7 +124,12 @@ def _load_sessions() -> None:
 
 def recover_sessions() -> int:
     _load_sessions()
-    dead = [sid for sid, s in _sessions.items() if not _is_pid_alive(s.pid)]
+    dead = []
+    for sid, s in _sessions.items():
+        if s.tmux_session and not _tmux_session_exists(s.tmux_session):
+            dead.append(sid)
+        elif not s.tmux_session and not _is_pid_alive(s.pid):
+            dead.append(sid)
     for sid in dead:
         del _sessions[sid]
     if dead:
@@ -111,274 +137,221 @@ def recover_sessions() -> int:
     return len(_sessions)
 
 
-async def _monitor_pty_output(session_id: str, master_fd: int, log_fh) -> None:
-    """Async reader that monitors PTY output for blocking prompts."""
+async def _monitor_pipe_output(session_id: str, pipe_path: str) -> None:
+    """Async reader that monitors tmux pipe-pane output for prompts and errors."""
     loop = asyncio.get_event_loop()
     buffer = ""
 
-    def _read_chunk():
+    # Wait for the pipe file to be created
+    for _ in range(20):
+        if os.path.exists(pipe_path):
+            break
+        await asyncio.sleep(0.25)
+
+    def _read_chunk(fh):
         try:
-            return os.read(master_fd, 4096).decode("utf-8", errors="replace")
-        except OSError:
+            data = fh.read(4096)
+            return data if data else None
+        except (OSError, ValueError):
             return None
 
-    while True:
-        chunk = await loop.run_in_executor(None, _read_chunk)
-        if chunk is None:
-            # PTY closed — process likely exited. Check buffer for error messages.
+    try:
+        # Open pipe in non-blocking read mode via a thread
+        while True:
             session = _sessions.get(session_id)
-            if session and buffer.strip():
-                for pattern in ERROR_PATTERNS:
-                    if pattern.search(buffer):
-                        lines = buffer.strip().split("\n")
-                        error_text = "\n".join(lines[-5:])
-                        session.status = "dead"
-                        session.blocked_prompt = error_text
-                        _save_sessions()
-                        logger.error(
-                            f"Session {session_id} ({session.project_name}) exited with error: "
-                            f"{error_text[:100]}"
-                        )
-                        is_trust_error = TRUST_ERROR.search(error_text)
-                        prefix = "[TRUST]" if is_trust_error else "[EXITED]"
-                        if _prompt_callback:
-                            try:
-                                asyncio.create_task(
-                                    _prompt_callback(
-                                        session_id, session.project_name,
-                                        f"{prefix} {error_text}",
-                                        project_path=session.project_path,
-                                    )
-                                )
-                            except Exception as e:
-                                logger.error(f"Error callback failed: {e}")
-                        break
-            break
-
-        # Write to log file
-        try:
-            log_fh.write(chunk)
-            log_fh.flush()
-        except (OSError, ValueError):
-            pass
-
-        buffer += chunk
-        if len(buffer) > 2048:
-            buffer = buffer[-2048:]
-
-        session = _sessions.get(session_id)
-        if not session or session.status != "running":
-            continue
-
-        # Check ERROR patterns first — they contain the same keywords as prompt patterns
-        # but represent a hard exit, not an interactive prompt
-        error_matched = False
-        for pattern in ERROR_PATTERNS:
-            if pattern.search(buffer):
-                lines = buffer.strip().split("\n")
-                error_text = "\n".join(lines[-5:])
-                session.status = "dead"
-                session.blocked_prompt = error_text
-                _save_sessions()
-                is_trust = TRUST_ERROR.search(error_text)
-                prefix = "[TRUST]" if is_trust else "[EXITED]"
-                logger.error(
-                    f"Session {session_id} ({session.project_name}) error detected: "
-                    f"{error_text[:100]}"
-                )
-                if _prompt_callback:
-                    try:
-                        asyncio.create_task(
-                            _prompt_callback(
-                                session_id, session.project_name,
-                                f"{prefix} {error_text}",
-                                project_path=session.project_path,
-                            )
-                        )
-                    except Exception as e:
-                        logger.error(f"Error callback failed: {e}")
-                buffer = ""
-                error_matched = True
+            if not session:
+                break
+            if session.tmux_session and not _tmux_session_exists(session.tmux_session):
                 break
 
-        if error_matched:
-            continue
+            # Read whatever is available in the log file (tail -f style)
+            log_file = session.log_file
+            try:
+                current_size = os.path.getsize(log_file)
+                read_from = len(buffer)
+                if current_size > read_from:
+                    with open(log_file, "r", errors="replace") as f:
+                        f.seek(read_from)
+                        new_data = f.read()
+                    if new_data:
+                        buffer += new_data
+                        if len(buffer) > 4096:
+                            buffer = buffer[-4096:]
 
-        # Then check interactive prompt patterns
-        for pattern in PROMPT_PATTERNS:
-            if pattern.search(buffer):
-                lines = buffer.strip().split("\n")
-                prompt_text = "\n".join(lines[-5:])
-                session.status = "blocked"
-                session.blocked_prompt = prompt_text
-                _save_sessions()
-                logger.warning(
-                    f"Session {session_id} ({session.project_name}) blocked on prompt: "
-                    f"{prompt_text[:100]}"
-                )
-                if _prompt_callback:
-                    try:
-                        asyncio.create_task(
-                            _prompt_callback(
-                                session_id, session.project_name, prompt_text,
-                                project_path=session.project_path,
-                            )
-                        )
-                    except Exception as e:
-                        logger.error(f"Prompt callback error: {e}")
-                buffer = ""
-                break
+                        if session.status != "running":
+                            await asyncio.sleep(1)
+                            continue
+
+                        # Check ERROR patterns first
+                        error_matched = False
+                        for pattern in ERROR_PATTERNS:
+                            if pattern.search(buffer):
+                                lines = buffer.strip().split("\n")
+                                error_text = "\n".join(lines[-5:])
+                                session.status = "dead"
+                                session.blocked_prompt = error_text
+                                _save_sessions()
+                                is_trust = TRUST_ERROR.search(error_text)
+                                prefix = "[TRUST]" if is_trust else "[EXITED]"
+                                logger.error(f"Session {session_id} error: {error_text[:100]}")
+                                if _prompt_callback:
+                                    try:
+                                        asyncio.create_task(_prompt_callback(
+                                            session_id, session.project_name,
+                                            f"{prefix} {error_text}",
+                                            project_path=session.project_path,
+                                        ))
+                                    except Exception as e:
+                                        logger.error(f"Callback error: {e}")
+                                buffer = ""
+                                error_matched = True
+                                break
+                        if error_matched:
+                            await asyncio.sleep(1)
+                            continue
+
+                        # Then check prompt patterns
+                        for pattern in PROMPT_PATTERNS:
+                            if pattern.search(buffer):
+                                lines = buffer.strip().split("\n")
+                                prompt_text = "\n".join(lines[-5:])
+                                session.status = "blocked"
+                                session.blocked_prompt = prompt_text
+                                _save_sessions()
+                                logger.warning(f"Session {session_id} blocked: {prompt_text[:100]}")
+                                if _prompt_callback:
+                                    try:
+                                        asyncio.create_task(_prompt_callback(
+                                            session_id, session.project_name, prompt_text,
+                                            project_path=session.project_path,
+                                        ))
+                                    except Exception as e:
+                                        logger.error(f"Callback error: {e}")
+                                buffer = ""
+                                break
+            except (OSError, FileNotFoundError):
+                pass
+
+            await asyncio.sleep(1)
+    except Exception as e:
+        logger.error(f"Monitor error for {session_id}: {e}")
 
 
 async def start_session(project_path: str, project_name: str, name: Optional[str] = None) -> SessionInfo:
     session_id = uuid.uuid4().hex[:12]
     display_name = name or project_name
+    tmux_name = f"claude-{session_id}"
     log_file = LOGS_DIR / f"{session_id}.log"
 
-    env = {**os.environ, "PATH": f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"}
+    env_path = f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"
 
-    # Spawn via PTY so we can monitor stdout for prompts
-    master_fd, slave_fd = pty.openpty()
+    # Create tmux session running claude remote-control
+    cmd = f"export PATH='{env_path}'; {CLAUDE_BIN} remote-control --name '{display_name}' --spawn same-dir"
 
-    log_fh = open(log_file, "w")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            CLAUDE_BIN,
-            "remote-control",
-            "--name", display_name,
-            "--spawn", "same-dir",
-            cwd=project_path,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            env=env,
-        )
-    except Exception:
-        os.close(master_fd)
-        os.close(slave_fd)
-        log_fh.close()
-        raise
+    subprocess.run(
+        [TMUX, "new-session", "-d", "-s", tmux_name, "-c", project_path, cmd],
+        capture_output=True, timeout=10,
+    )
 
-    # Close slave side in parent — child has it
-    os.close(slave_fd)
+    # Set up pipe-pane to capture output to log file
+    subprocess.run(
+        [TMUX, "pipe-pane", "-t", tmux_name, f"cat >> {log_file}"],
+        capture_output=True, timeout=5,
+    )
 
-    _pty_masters[session_id] = master_fd
-    _log_handles[session_id] = log_fh
+    # Get the PID of the shell in the tmux pane
+    await asyncio.sleep(0.5)
+    pid = _tmux_get_pane_pid(tmux_name)
 
     session = SessionInfo(
         session_id=session_id,
         project_name=project_name,
         project_path=project_path,
-        pid=proc.pid,
+        pid=pid,
         started_at=datetime.utcnow().isoformat(),
         log_file=str(log_file),
+        tmux_session=tmux_name,
     )
     _sessions[session_id] = session
     _save_sessions()
 
-    # Start async PTY monitor
-    asyncio.create_task(_monitor_pty_output(session_id, master_fd, log_fh))
+    # Start output monitor
+    asyncio.create_task(_monitor_pipe_output(session_id, str(log_file)))
 
     return session
 
 
 async def respond_to_prompt(session_id: str, response: str) -> bool:
-    """Send a response to a blocked session's prompt (e.g. 'y' or 'n')."""
-    master_fd = _pty_masters.get(session_id)
+    """Send a response to a blocked session's prompt via tmux send-keys."""
     session = _sessions.get(session_id)
-    if not master_fd or not session:
+    if not session or not session.tmux_session:
+        return False
+    if not _tmux_session_exists(session.tmux_session):
         return False
 
     try:
-        os.write(master_fd, (response + "\n").encode())
+        subprocess.run(
+            [TMUX, "send-keys", "-t", session.tmux_session, response, "Enter"],
+            capture_output=True, timeout=5,
+        )
         session.status = "running"
         session.blocked_prompt = ""
         _save_sessions()
-        logger.info(f"Sent response '{response}' to session {session_id}")
+        logger.info(f"Sent '{response}' to tmux session {session.tmux_session}")
         return True
-    except OSError as e:
-        logger.error(f"Failed to write to PTY for session {session_id}: {e}")
+    except Exception as e:
+        logger.error(f"Failed to send keys to {session.tmux_session}: {e}")
         return False
 
 
 async def trust_and_launch(project_path: str, project_name: str, name: Optional[str] = None) -> SessionInfo:
-    """Trust a workspace by running claude interactively, accepting the trust prompt,
-    then re-launching as remote-control.
+    """Trust a workspace via tmux, then re-launch as remote-control."""
+    tmux_name = "claude-trust-tmp"
+    env_path = f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"
+    cmd = f"export PATH='{env_path}'; {CLAUDE_BIN}"
 
-    The trust dialog is a TUI with numbered options:
-      1. Yes, I trust this folder
-      2. No, exit
-    Enter confirms the default (option 1). We send Enter to accept.
-    """
-    env = {**os.environ, "PATH": f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"}
-    master_fd, slave_fd = pty.openpty()
-    loop = asyncio.get_event_loop()
+    # Kill any leftover trust session
+    subprocess.run([TMUX, "kill-session", "-t", tmux_name], capture_output=True)
+    await asyncio.sleep(0.5)
 
-    try:
-        # Launch claude interactively (NOT -p headless, which skips the trust TUI)
-        proc = await asyncio.create_subprocess_exec(
-            CLAUDE_BIN,
-            cwd=project_path,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            env=env,
-        )
-    except Exception:
-        os.close(master_fd)
-        os.close(slave_fd)
-        raise
+    # Launch interactive claude in a temporary tmux session
+    subprocess.run(
+        [TMUX, "new-session", "-d", "-s", tmux_name, "-c", project_path, cmd],
+        capture_output=True, timeout=10,
+    )
 
-    os.close(slave_fd)
+    # Capture output to a temp log
+    trust_log = LOGS_DIR / "trust_tmp.log"
+    trust_log.write_text("")
+    subprocess.run(
+        [TMUX, "pipe-pane", "-t", tmux_name, f"cat >> {trust_log}"],
+        capture_output=True, timeout=5,
+    )
 
-    def _read():
-        try:
-            return os.read(master_fd, 4096).decode("utf-8", errors="replace")
-        except OSError:
-            return None
-
-    # Monitor output for the trust TUI menu.
-    # Wait until "Enter to confirm" appears — that means the menu is interactive.
-    # Then send Enter to accept option 1 ("Yes, I trust this folder").
+    # Monitor for trust dialog and send Enter
     trust_sent = False
-    buffer = ""
     for _ in range(40):  # max 20 seconds
-        chunk = await loop.run_in_executor(None, _read)
-        if chunk is None:
-            break
-        buffer += chunk
-
-        if not trust_sent and re.search(r"Enter.*confirm", buffer):
-            await asyncio.sleep(0.5)  # let TUI fully settle
-            try:
-                os.write(master_fd, b"\r")  # Enter to confirm option 1
-                logger.info(f"Sent Enter to accept trust for {project_name}")
-                trust_sent = True
-            except OSError:
-                break
-
-        # After trust is accepted, claude starts its REPL — wait for it
-        if trust_sent:
-            await asyncio.sleep(2)  # give it time to initialize
-            break
-
         await asyncio.sleep(0.5)
+        try:
+            content = trust_log.read_text()
+        except OSError:
+            continue
 
-    # Kill the interactive session — we only needed it to accept trust
-    try:
-        os.kill(proc.pid, signal.SIGTERM)
-    except OSError:
-        pass
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5)
-    except asyncio.TimeoutError:
-        proc.kill()
+        if not trust_sent and re.search(r"Enter.*confirm", content):
+            await asyncio.sleep(0.5)
+            subprocess.run(
+                [TMUX, "send-keys", "-t", tmux_name, "", "Enter"],
+                capture_output=True, timeout=5,
+            )
+            logger.info(f"Sent Enter to accept trust for {project_name}")
+            trust_sent = True
 
-    try:
-        os.close(master_fd)
-    except OSError:
-        pass
+        if trust_sent:
+            await asyncio.sleep(2)
+            break
 
+    # Kill the trust session
+    subprocess.run([TMUX, "kill-session", "-t", tmux_name], capture_output=True)
     logger.info(f"Trust flow complete for {project_name} (sent={trust_sent})")
 
     # Now launch the actual remote-control session
@@ -390,31 +363,16 @@ async def stop_session(session_id: str) -> bool:
     if not session:
         return False
 
-    try:
-        os.kill(session.pid, signal.SIGTERM)
-        for _ in range(10):
-            await asyncio.sleep(0.5)
-            if not _is_pid_alive(session.pid):
-                break
-        else:
-            os.kill(session.pid, signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        pass
-
-    # Close PTY master fd
-    master_fd = _pty_masters.pop(session_id, None)
-    if master_fd:
+    if session.tmux_session:
+        subprocess.run(
+            [TMUX, "kill-session", "-t", session.tmux_session],
+            capture_output=True, timeout=5,
+        )
+    else:
+        # Fallback for legacy sessions without tmux
         try:
-            os.close(master_fd)
-        except OSError:
-            pass
-
-    # Close log file handle
-    log_fh = _log_handles.pop(session_id, None)
-    if log_fh:
-        try:
-            log_fh.close()
-        except Exception:
+            os.kill(session.pid, 14)  # SIGTERM
+        except (OSError, ProcessLookupError):
             pass
 
     del _sessions[session_id]
@@ -423,7 +381,6 @@ async def stop_session(session_id: str) -> bool:
 
 
 async def stop_all_sessions() -> int:
-    """Stop all active sessions. Called on graceful shutdown."""
     count = 0
     for sid in list(_sessions.keys()):
         if await stop_session(sid):
@@ -432,21 +389,13 @@ async def stop_all_sessions() -> int:
 
 
 def list_sessions() -> list:
-    dead = [sid for sid, s in _sessions.items() if not _is_pid_alive(s.pid)]
+    dead = []
+    for sid, s in _sessions.items():
+        if s.tmux_session and not _tmux_session_exists(s.tmux_session):
+            dead.append(sid)
+        elif not s.tmux_session and not _is_pid_alive(s.pid):
+            dead.append(sid)
     for sid in dead:
-        # Clean up PTY/log handles for dead sessions
-        master_fd = _pty_masters.pop(sid, None)
-        if master_fd:
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
-        log_fh = _log_handles.pop(sid, None)
-        if log_fh:
-            try:
-                log_fh.close()
-            except Exception:
-                pass
         del _sessions[sid]
     if dead:
         _save_sessions()
@@ -457,7 +406,8 @@ def get_session(session_id: str) -> Optional[Dict]:
     s = _sessions.get(session_id)
     if not s:
         return None
-    if not _is_pid_alive(s.pid):
+    alive = _tmux_session_exists(s.tmux_session) if s.tmux_session else _is_pid_alive(s.pid)
+    if not alive:
         del _sessions[session_id]
         _save_sessions()
         return None
