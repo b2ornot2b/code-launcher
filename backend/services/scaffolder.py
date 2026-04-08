@@ -81,9 +81,64 @@ def create_project(template_key: str, name: str, base_dir: str = "") -> Dict:
             f"Created: {date.today().isoformat()}\n"
         )
 
+    # Initialize Task Master with local Gemma 4 config
+    _init_taskmaster(target)
+
     return {
         "name": name,
         "slug": slug,
         "path": str(target),
         "template": template_key,
     }
+
+
+TASKMASTER_CONFIG = """{
+  "models": {
+    "main": {
+      "provider": "openai",
+      "modelId": "gemma-4-31b-it-8bit",
+      "maxTokens": 8192,
+      "temperature": 0.2,
+      "baseURL": "http://b2studio.local:8000/v1"
+    },
+    "research": {
+      "provider": "openai",
+      "modelId": "gemma-4-31b-it-8bit",
+      "maxTokens": 8192,
+      "temperature": 0.1,
+      "baseURL": "http://b2studio.local:8000/v1"
+    },
+    "fallback": {
+      "provider": "openai",
+      "modelId": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
+      "maxTokens": 8192,
+      "temperature": 0.2,
+      "baseURL": "http://b2studio.local:8000/v1"
+    }
+  },
+  "global": {
+    "logLevel": "info",
+    "debug": false,
+    "defaultNumTasks": 10,
+    "defaultSubtasks": 3,
+    "defaultPriority": "medium",
+    "responseLanguage": "English",
+    "anonymousTelemetry": false
+  }
+}"""
+
+
+def _init_taskmaster(project_path: Path) -> None:
+    """Initialize Task Master with local Gemma 4 config in a new project."""
+    tm_dir = project_path / ".taskmaster"
+    tm_dir.mkdir(exist_ok=True)
+    (tm_dir / "tasks").mkdir(exist_ok=True)
+    (tm_dir / "docs").mkdir(exist_ok=True)
+
+    config = tm_dir / "config.json"
+    config.write_text(TASKMASTER_CONFIG)
+
+    # .env with API key for the local LLM
+    env_file = project_path / ".env"
+    if not env_file.exists():
+        env_file.write_text("OPENAI_API_KEY=123qwe123\n")
