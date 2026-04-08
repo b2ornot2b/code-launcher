@@ -130,16 +130,17 @@ async def start_terminal(
         shell_cmd = f"{TMUX_BIN} new-session -A -s {tmux_name} -c {project_path}"
         attach_mode = False
 
-    # Build URL with embedded credentials
-    url = f"http://t:{credential}@{host_ip}:{port}/"
+    # Use token as base-path — no auth dialog, token is in the URL
+    token_path = f"/{credential}"
+    url = f"http://{host_ip}:{port}{token_path}/"
 
     # Spawn ttyd
     proc = subprocess.Popen(
         [
             TTYD_BIN,
-            "--writable",  # allow input (default is read-only!)
-            "--once",  # exit after client disconnects
-            "--credential", f"t:{credential}",
+            "--writable",
+            "--once",
+            "--base-path", token_path,
             "--port", str(port),
             "--interface", "0.0.0.0",
             "bash", "-c", shell_cmd,
