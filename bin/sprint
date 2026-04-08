@@ -61,32 +61,13 @@ TMCONFIG
       _green "Task Master configured with local Gemma 4"
     fi
 
-    # Step 1: Create/edit PRD, then parse into tasks
+    # Step 1: Check PRD exists
     if [ ! -f "$PRD_FILE" ]; then
       mkdir -p .taskmaster/docs
-      cat > "$PRD_FILE" << 'TEMPLATE'
-# Project Requirements Document
-
-## Overview
-[Describe what you're building]
-
-## Goals
-- [Goal 1]
-- [Goal 2]
-
-## Features
-### Feature 1
-[Description and acceptance criteria]
-
-### Feature 2
-[Description and acceptance criteria]
-
-## Technical Notes
-[Stack, constraints, existing code to build on]
-TEMPLATE
-      _green "Created $PRD_FILE"
-      _dim "Edit it with your sprint plan, then run: sprint plan"
-      ${EDITOR:-nano} "$PRD_FILE"
+      _yellow "No PRD found at $PRD_FILE"
+      _dim "Write your PRD first, then run: sprint plan"
+      _dim "Example: ask Opus to 'Write a PRD to $PRD_FILE'"
+      exit 1
     fi
 
     _bold "Parsing PRD into tasks..."
