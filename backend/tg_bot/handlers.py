@@ -616,9 +616,12 @@ async def _handle_terminal(query, data: str):
         await query.edit_message_text(f"\U0001f5a5 Starting terminal for *{project.name}*...", parse_mode="Markdown")
         terminal = await terminal_manager.start_terminal(project.path, project.name)
 
+        plain_url = f"http://{terminal.url.split('@')[1]}"
         await query.edit_message_text(
             f"\U0001f5a5 *Terminal ready:* {project.name}\n\n"
-            f"\U0001f517 Open in browser:\n`{terminal.url}`\n\n"
+            f"\U0001f517 URL: `{plain_url}`\n"
+            f"\U0001f464 User: `t`\n"
+            f"\U0001f511 Pass: `{terminal.credential}`\n\n"
             f"\u23f1 Expires in 30 min or on disconnect\n"
             f"\U0001f4bb tmux: `{terminal.tmux_session}`",
             parse_mode="Markdown",
@@ -642,9 +645,12 @@ async def _handle_terminal(query, data: str):
             tmux_session=session.tmux_session,
         )
 
+        plain_url = f"http://{terminal.url.split('@')[1]}"
         await query.edit_message_text(
             f"\U0001f5a5 *Terminal attached:* {session.project_name}\n\n"
-            f"\U0001f517 Open in browser:\n`{terminal.url}`\n\n"
+            f"\U0001f517 URL: `{plain_url}`\n"
+            f"\U0001f464 User: `t`\n"
+            f"\U0001f511 Pass: `{terminal.credential}`\n\n"
             f"\u23f1 Expires in 30 min or on disconnect\n"
             f"\U0001f4bb tmux: `{session.tmux_session}`",
             parse_mode="Markdown",
