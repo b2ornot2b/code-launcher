@@ -317,24 +317,37 @@ async def trust_and_launch(project_path: str, project_name: str, name: Optional[
     trust_log = LOGS_DIR / "trust_tmp.log"
     trust_log.write_text("")
 
-    cmd = f"export PATH='{env_path}'; {CLAUDE_BIN} 2>&1 | tee -a {trust_log}; sleep 3"
+    # Don't pipe through tee — the trust dialog needs a real TTY
+    # Use tmux pipe-pane instead (captures output without breaking TTY)
+    cmd = f"export PATH='{env_path}'; exec {CLAUDE_BIN}"
 
     # Kill any leftover trust session
     subprocess.run([TMUX, "kill-session", "-t", tmux_name], capture_output=True)
     await asyncio.sleep(0.5)
 
-    # Launch interactive claude in a temporary tmux session
+    # Launch interactive claude with real TTY in tmux
     subprocess.run(
         [TMUX, "new-session", "-d", "-s", tmux_name, "-c", project_path, "bash", "-c", cmd],
         capture_output=True, timeout=10,
+    )
+
+    # pipe-pane captures output without breaking the TTY
+    subprocess.run(
+        [TMUX, "pipe-pane", "-t", tmux_name, f"cat >> {trust_log}"],
+        capture_output=True, timeout=5,
     )
 
     # Monitor for trust dialog and send Enter
     trust_sent = False
     for _ in range(40):  # max 20 seconds
         await asyncio.sleep(0.5)
+
+        if not _tmux_session_exists(tmux_name):
+            logger.warning("Trust tmux session died before trust could be sent")
+            break
+
         try:
-            content = trust_log.read_text()
+            content = trust_log.read_text(errors="replace")
         except OSError:
             continue
 
