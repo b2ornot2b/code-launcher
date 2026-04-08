@@ -311,8 +311,14 @@ async def start_session(project_path: str, project_name: str, name: Optional[str
     claude_dir = str(Path(CLAUDE_BIN).parent)
     env_path = f"{claude_dir}:{os.environ.get('PATH', '')}"
 
+    # Pass through OPENAI_API_KEY so sprint/opencode work inside sessions
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    env_exports = f"export PATH='{env_path}'; export HOME='{Path.home()}';"
+    if openai_key:
+        env_exports += f" export OPENAI_API_KEY='{openai_key}';"
+
     cmd = (
-        f"export PATH='{env_path}'; "
+        f"{env_exports} "
         f"{CLAUDE_BIN} remote-control --name '{display_name}' --spawn {spawn_mode} 2>&1 | tee -a {log_file}; "
         f"echo '[SESSION EXITED]' >> {log_file}; "
         f"sleep 5"

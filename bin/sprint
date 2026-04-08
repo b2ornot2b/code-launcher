@@ -15,6 +15,12 @@ _cyan() { printf "\033[36m%s\033[0m\n" "$*"; }
 case "${1:-help}" in
 
   plan)
+    # Auto-init Task Master if needed
+    if [ ! -d ".taskmaster" ]; then
+      _bold "Initializing Task Master..."
+      task-master init --yes 2>&1 | tail -3
+    fi
+
     # Step 1: Create/edit PRD, then parse into tasks
     if [ ! -f "$PRD_FILE" ]; then
       mkdir -p .taskmaster/docs
