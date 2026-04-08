@@ -137,6 +137,7 @@ async def start_terminal(
     proc = subprocess.Popen(
         [
             TTYD_BIN,
+            "--writable",  # allow input (default is read-only!)
             "--once",  # exit after client disconnects
             "--credential", f"t:{credential}",
             "--port", str(port),
