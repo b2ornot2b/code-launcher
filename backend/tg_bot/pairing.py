@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import tempfile
 import time
@@ -38,6 +39,7 @@ def _save_paired_users(users: Set[int]) -> None:
         tmp.write(json.dumps(sorted(users)))
         tmp.close()
         Path(tmp.name).replace(PAIRED_USERS_FILE)
+        os.chmod(PAIRED_USERS_FILE, 0o600)
     except Exception:
         Path(tmp.name).unlink(missing_ok=True)
         raise

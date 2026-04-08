@@ -8,6 +8,8 @@ from typing import Dict, List
 
 from config import TEMPLATES_DIR, PROJECT_ROOTS
 
+MAX_PROJECT_NAME_LENGTH = 64
+
 TEMPLATES = {
     "android": {"name": "Android App (Kotlin)", "description": "Kotlin/Gradle Android project"},
     "cli_python": {"name": "CLI Tool (Python)", "description": "Python CLI with pyproject.toml"},
@@ -29,6 +31,9 @@ def create_project(template_key: str, name: str, base_dir: str = "") -> Dict:
     if template_key not in TEMPLATES:
         return {"error": f"Unknown template: {template_key}"}
 
+    if len(name) > MAX_PROJECT_NAME_LENGTH:
+        return {"error": f"Project name too long (max {MAX_PROJECT_NAME_LENGTH} chars)"}
+
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     if not slug:
         return {"error": "Invalid project name"}
@@ -36,7 +41,7 @@ def create_project(template_key: str, name: str, base_dir: str = "") -> Dict:
     if base_dir:
         target_root = Path(base_dir).resolve()
         # Validate base_dir is within allowed project roots
-        if not any(str(target_root).startswith(str(r.resolve())) for r in PROJECT_ROOTS):
+        if not any(target_root.is_relative_to(r.resolve()) for r in PROJECT_ROOTS):
             return {"error": f"base_dir must be within a configured project root"}
     else:
         target_root = PROJECT_ROOTS[0]
@@ -138,7 +143,7 @@ def _init_taskmaster(project_path: Path) -> None:
     config = tm_dir / "config.json"
     config.write_text(TASKMASTER_CONFIG)
 
-    # .env with API key for the local LLM
+    # .env placeholder — user must set their own key
     env_file = project_path / ".env"
     if not env_file.exists():
-        env_file.write_text("OPENAI_API_KEY=123qwe123\n")
+        env_file.write_text("# Set your API key for the local LLM\nOPENAI_API_KEY=\n")

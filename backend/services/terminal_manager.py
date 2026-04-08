@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import secrets
+import shlex
 import signal
 import subprocess
 from dataclasses import dataclass, asdict
@@ -118,7 +119,7 @@ async def start_terminal(
 
     if tmux_session:
         # Attach to existing session
-        shell_cmd = f"{TMUX_BIN} attach -t {tmux_session}"
+        shell_cmd = f"{TMUX_BIN} attach -t {shlex.quote(tmux_session)}"
         attach_mode = True
         tmux_name = tmux_session
     else:
@@ -127,7 +128,7 @@ async def start_terminal(
         import re
         slug = re.sub(r"[^a-z0-9]+", "-", project_name.lower()).strip("-")[:20]
         tmux_name = f"ccl-{slug}-term-{ts}"
-        shell_cmd = f"{TMUX_BIN} new-session -A -s {tmux_name} -c {project_path}"
+        shell_cmd = f"{TMUX_BIN} new-session -A -s {shlex.quote(tmux_name)} -c {shlex.quote(project_path)}"
         attach_mode = False
 
     # Use token as base-path — no auth dialog, token is in the URL
@@ -142,7 +143,7 @@ async def start_terminal(
             "--once",
             "--base-path", token_path,
             "--port", str(port),
-            "--interface", "0.0.0.0",
+            "--interface", "127.0.0.1",
             "bash", "-c", shell_cmd,
         ],
         stdout=subprocess.DEVNULL,

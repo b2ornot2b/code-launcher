@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import uuid
 from dataclasses import dataclass, asdict
@@ -159,6 +160,7 @@ def cleanup_stale_tmux() -> int:
 def _save_sessions() -> None:
     data = {sid: asdict(s) for sid, s in _sessions.items()}
     SESSIONS_FILE.write_text(json.dumps(data, indent=2))
+    os.chmod(SESSIONS_FILE, 0o600)
 
 
 def _load_sessions() -> None:
@@ -312,15 +314,17 @@ async def start_session(project_path: str, project_name: str, name: Optional[str
     env_path = f"{claude_dir}:{os.environ.get('PATH', '')}"
 
     # Pass through OPENAI_API_KEY so sprint/opencode work inside sessions
-    openai_key = os.environ.get("OPENAI_API_KEY", "123qwe123")
-    env_exports = f"export PATH='{env_path}'; export HOME='{Path.home()}';"
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    env_exports = f"export PATH={shlex.quote(env_path)}; export HOME={shlex.quote(str(Path.home()))};"
     if openai_key:
-        env_exports += f" export OPENAI_API_KEY='{openai_key}';"
+        env_exports += f" export OPENAI_API_KEY={shlex.quote(openai_key)};"
 
+    safe_name = shlex.quote(display_name)
+    safe_log = shlex.quote(str(log_file))
     cmd = (
         f"{env_exports} "
-        f"{CLAUDE_BIN} remote-control --name '{display_name}' --spawn {spawn_mode} 2>&1 | tee -a {log_file}; "
-        f"echo '[SESSION EXITED]' >> {log_file}; "
+        f"{CLAUDE_BIN} remote-control --name {safe_name} --spawn {spawn_mode} 2>&1 | tee -a {safe_log}; "
+        f"echo '[SESSION EXITED]' >> {safe_log}; "
         f"sleep 5"
     )
 
@@ -391,7 +395,7 @@ async def trust_and_launch(project_path: str, project_name: str, name: Optional[
 
     # Don't pipe through tee — the trust dialog needs a real TTY
     # Use tmux pipe-pane instead (captures output without breaking TTY)
-    cmd = f"export PATH='{env_path}'; exec {CLAUDE_BIN}"
+    cmd = f"export PATH={shlex.quote(env_path)}; exec {CLAUDE_BIN}"
 
     # Kill any leftover trust session
     subprocess.run([TMUX, "kill-session", "-t", tmux_name], capture_output=True)
