@@ -19,6 +19,46 @@ case "${1:-help}" in
     if [ ! -d ".taskmaster" ]; then
       _bold "Initializing Task Master..."
       task-master init --yes 2>&1 | tail -3
+
+      # Apply local Gemma 4 config (overwrite default Anthropic/Perplexity)
+      _bold "Configuring local Gemma 4 model..."
+      cat > .taskmaster/config.json << 'TMCONFIG'
+{
+  "models": {
+    "main": {
+      "provider": "openai",
+      "modelId": "gemma-4-31b-it-8bit",
+      "maxTokens": 8192,
+      "temperature": 0.2,
+      "baseURL": "http://b2studio.local:8000/v1"
+    },
+    "research": {
+      "provider": "openai",
+      "modelId": "gemma-4-31b-it-8bit",
+      "maxTokens": 8192,
+      "temperature": 0.1,
+      "baseURL": "http://b2studio.local:8000/v1"
+    },
+    "fallback": {
+      "provider": "openai",
+      "modelId": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
+      "maxTokens": 8192,
+      "temperature": 0.2,
+      "baseURL": "http://b2studio.local:8000/v1"
+    }
+  },
+  "global": {
+    "logLevel": "info",
+    "debug": false,
+    "defaultNumTasks": 10,
+    "defaultSubtasks": 3,
+    "defaultPriority": "medium",
+    "responseLanguage": "English",
+    "anonymousTelemetry": false
+  }
+}
+TMCONFIG
+      _green "Task Master configured with local Gemma 4"
     fi
 
     # Step 1: Create/edit PRD, then parse into tasks
