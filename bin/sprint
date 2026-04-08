@@ -1,10 +1,9 @@
 #!/bin/bash
-# sprint — streamlined dev sprint workflow
-# Opus plans → Gemma executes → Opus reviews
+# sprint — dev sprint execution workflow
+# Planning is done by Opus (Claude Code). Execution is done by Gemma 4 (OpenCode).
 set -e
 
 OPENCODE_MODEL="b2studio/gemma-4-31b-it-8bit"
-PRD_FILE=".taskmaster/docs/prd.txt"
 
 # Ensure API key is set for local LLM endpoint
 export OPENAI_API_KEY="${OPENAI_API_KEY:-123qwe123}"
@@ -17,84 +16,14 @@ _cyan() { printf "\033[36m%s\033[0m\n" "$*"; }
 
 case "${1:-help}" in
 
-  plan)
-    # Auto-init Task Master if needed
-    if [ ! -d ".taskmaster" ]; then
-      _bold "Initializing Task Master..."
-      task-master init --yes 2>&1 | tail -3
-    fi
-
-    # Always ensure Gemma 4 config (fixes cases where init created default Anthropic config)
-    if [ -d ".taskmaster" ]; then
-      cat > .taskmaster/config.json << 'TMCONFIG'
-{
-  "models": {
-    "main": {
-      "provider": "openai",
-      "modelId": "gemma-4-31b-it-8bit",
-      "maxTokens": 8192,
-      "temperature": 0.2,
-      "baseURL": "http://b2studio.local:8000/v1"
-    },
-    "research": {
-      "provider": "openai",
-      "modelId": "gemma-4-31b-it-8bit",
-      "maxTokens": 8192,
-      "temperature": 0.1,
-      "baseURL": "http://b2studio.local:8000/v1"
-    },
-    "fallback": {
-      "provider": "openai",
-      "modelId": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
-      "maxTokens": 8192,
-      "temperature": 0.2,
-      "baseURL": "http://b2studio.local:8000/v1"
-    }
-  },
-  "global": {
-    "logLevel": "info",
-    "debug": false,
-    "defaultNumTasks": 10,
-    "defaultSubtasks": 3,
-    "defaultPriority": "medium",
-    "responseLanguage": "English",
-    "anonymousTelemetry": false
-  }
-}
-TMCONFIG
-    fi
-
-    # Step 1: Check PRD exists
-    if [ ! -f "$PRD_FILE" ]; then
-      mkdir -p .taskmaster/docs
-      _yellow "No PRD found at $PRD_FILE"
-      _dim "Write your PRD first, then run: sprint plan"
-      _dim "Example: ask Opus to 'Write a PRD to $PRD_FILE'"
-      exit 1
-    fi
-
-    _bold "Parsing PRD into tasks..."
-    task-master parse-prd "$PRD_FILE"
-
-    _bold "Analyzing complexity..."
-    task-master analyze-complexity --research 2>/dev/null || true
-
-    _bold "Expanding into subtasks..."
-    task-master expand --all --research 2>/dev/null || true
-
-    echo ""
-    _green "Sprint planned. Run 'sprint status' to see tasks."
-    ;;
-
   next)
-    # Get next task and execute with OpenCode
+    # Get next task and execute with OpenCode (Gemma 4)
     _bold "Next task:"
     echo ""
     TASK=$(task-master next 2>&1)
     echo "$TASK"
     echo ""
 
-    # Extract task ID from output
     TASK_ID=$(echo "$TASK" | grep -oE 'ID: [0-9]+' | head -1 | grep -oE '[0-9]+')
 
     if [ -z "$TASK_ID" ]; then
@@ -109,7 +38,6 @@ TMCONFIG
       exit 0
     fi
 
-    # Extract task description for opencode
     TASK_DESC=$(echo "$TASK" | sed -n '/Description/,/^$/p' | tail -n +2 | head -20)
     if [ -z "$TASK_DESC" ]; then
       TASK_DESC=$(echo "$TASK" | head -20)
@@ -128,6 +56,36 @@ TMCONFIG
       echo ""
       _dim "Run 'sprint next' for the next task."
     fi
+    ;;
+
+  run)
+    # Execute all pending tasks non-interactively with Gemma 4
+    _bold "Running all pending tasks with Gemma 4..."
+    echo ""
+    while true; do
+      TASK=$(task-master next 2>&1)
+      TASK_ID=$(echo "$TASK" | grep -oE 'ID: [0-9]+' | head -1 | grep -oE '[0-9]+')
+
+      if [ -z "$TASK_ID" ]; then
+        _green "All tasks complete!"
+        break
+      fi
+
+      _cyan "Task $TASK_ID:"
+      echo "$TASK" | head -5
+      echo ""
+
+      TASK_DESC=$(echo "$TASK" | sed -n '/Description/,/^$/p' | tail -n +2 | head -20)
+      if [ -z "$TASK_DESC" ]; then
+        TASK_DESC=$(echo "$TASK" | head -20)
+      fi
+
+      opencode run --model "$OPENCODE_MODEL" "Implement this task. Read relevant files first.\n\nTask:\n$TASK_DESC"
+
+      task-master set-status --id="$TASK_ID" --status=done
+      _green "Task $TASK_ID done."
+      echo ""
+    done
     ;;
 
   done)
@@ -161,52 +119,19 @@ TMCONFIG
     task-master list
     ;;
 
-  review)
-    # Launch Claude Code to review all changes
-    _bold "Launching Claude Code for sprint review..."
-    claude --rc "Sprint Review"
-    ;;
-
-  run)
-    # Execute all pending tasks non-interactively
-    _bold "Running all pending tasks with Gemma 4..."
-    echo ""
-    while true; do
-      TASK=$(task-master next 2>&1)
-      TASK_ID=$(echo "$TASK" | grep -oE 'ID: [0-9]+' | head -1 | grep -oE '[0-9]+')
-
-      if [ -z "$TASK_ID" ]; then
-        _green "All tasks complete!"
-        break
-      fi
-
-      _cyan "Task $TASK_ID:"
-      echo "$TASK" | head -5
-      echo ""
-
-      TASK_DESC=$(echo "$TASK" | sed -n '/Description/,/^$/p' | tail -n +2 | head -20)
-      if [ -z "$TASK_DESC" ]; then
-        TASK_DESC=$(echo "$TASK" | head -20)
-      fi
-
-      opencode run --model "$OPENCODE_MODEL" "Implement this task. Read relevant files first.\n\nTask:\n$TASK_DESC"
-
-      task-master set-status --id="$TASK_ID" --status=done
-      _green "Task $TASK_ID done."
-      echo ""
-    done
-    ;;
-
   *)
-    _bold "sprint — dev sprint workflow"
+    _bold "sprint — execute dev tasks with Gemma 4"
     echo ""
-    echo "  sprint plan      Create PRD & parse into tasks"
-    echo "  sprint status    Show task dashboard"
-    echo "  sprint next      Execute next task with Gemma 4"
-    echo "  sprint done [id] Mark task as done"
-    echo "  sprint skip [id] Skip/defer a task"
-    echo "  sprint run       Execute ALL tasks (auto mode)"
-    echo "  sprint review    Launch Claude Code to review"
+    echo "  Planning (done by Opus in Claude Code):"
+    echo "    1. Write PRD to .taskmaster/docs/prd.txt"
+    echo "    2. Use Task Master MCP tools to parse & expand tasks"
+    echo ""
+    echo "  Execution (done by Gemma 4 via OpenCode):"
+    echo "    sprint next      Execute next task"
+    echo "    sprint run       Execute ALL tasks (auto mode)"
+    echo "    sprint done [id] Mark task as done"
+    echo "    sprint skip [id] Skip/defer a task"
+    echo "    sprint status    Show task dashboard"
     ;;
 
 esac

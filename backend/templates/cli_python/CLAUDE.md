@@ -9,18 +9,17 @@ Python CLI tool.
 
 ## Development Workflow
 
-This project uses an automated sprint workflow:
+### Planning (Opus in Claude Code)
+1. Describe what you want built
+2. Opus writes the PRD to .taskmaster/docs/prd.txt
+3. Opus uses Task Master MCP tools to parse PRD into tasks and expand subtasks
 
+### Execution (Gemma 4 via OpenCode)
 ```bash
-sprint plan      # Write PRD, parse into tasks (Gemma 4)
 sprint status    # View task dashboard
-sprint next      # Execute next task (Gemma 4 via OpenCode)
+sprint next      # Execute next task with Gemma 4
 sprint run       # Execute all tasks autonomously
-sprint review    # Launch Claude Code to review changes
 ```
 
-### How it works
-1. Describe what you want built — Opus writes the PRD
-2. Run `sprint plan` — Gemma 4 breaks it into tasks
-3. Run `sprint next` or `sprint run` — Gemma 4 implements via OpenCode
-4. Review changes and ship
+### Review (Opus in Claude Code)
+Review changes, fix issues, commit and ship.
