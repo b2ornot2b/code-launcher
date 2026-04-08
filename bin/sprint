@@ -6,6 +6,9 @@ set -e
 OPENCODE_MODEL="b2studio/gemma-4-31b-it-8bit"
 PRD_FILE=".taskmaster/docs/prd.txt"
 
+# Ensure API key is set for local LLM endpoint
+export OPENAI_API_KEY="${OPENAI_API_KEY:-123qwe123}"
+
 _bold() { printf "\033[1m%s\033[0m\n" "$*"; }
 _dim() { printf "\033[2m%s\033[0m\n" "$*"; }
 _green() { printf "\033[32m%s\033[0m\n" "$*"; }
