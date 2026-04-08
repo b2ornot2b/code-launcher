@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import config
-from routers import projects, sessions, system, power, scaffold, telegram_ctrl
+from routers import projects, sessions, system, power, scaffold, telegram_ctrl, terminal
 from services.session_manager import recover_sessions, stop_all_sessions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -34,6 +34,7 @@ app.include_router(system.router, prefix="/api/v1")
 app.include_router(power.router, prefix="/api/v1")
 app.include_router(scaffold.router, prefix="/api/v1")
 app.include_router(telegram_ctrl.router, prefix="/api/v1")
+app.include_router(terminal.router, prefix="/api/v1")
 
 # Track telegram app for clean shutdown
 _telegram_app = None

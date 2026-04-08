@@ -11,7 +11,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from tg_bot.pairing import is_paired, verify_pairing_code, unpair_user, get_paired_users
-from services import project_scanner, session_manager, system_info, settings
+from services import project_scanner, session_manager, system_info, settings, terminal_manager
 from services.scaffolder import list_templates, create_project
 
 logger = logging.getLogger(__name__)
@@ -362,6 +362,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_scaffold(query, data, context)
     elif data.startswith("m:"):
         await _handle_maintenance(query, data)
+    elif data.startswith("t:"):
+        await _handle_terminal(query, data)
     elif data.startswith("ob:"):
         if data == "ob:settings":
             await _show_settings(query)
@@ -449,6 +451,7 @@ async def _handle_projects(query, data: str):
             launch_row.append(InlineKeyboardButton("\U0001f9ea Experiment", callback_data=f"p:ex:{slug}"))
         keyboard = InlineKeyboardMarkup([
             launch_row,
+            [InlineKeyboardButton("\U0001f5a5 Terminal", callback_data=f"t:new:{slug}")],
             [InlineKeyboardButton("\U0001f4c2 Projects", callback_data="p:l:0"),
              InlineKeyboardButton("\U0001f3e0 Menu", callback_data="menu")],
         ])
@@ -507,9 +510,13 @@ async def _handle_sessions(query, data: str):
             )
             buttons.append([
                 InlineKeyboardButton(
-                    f"\U0001f6d1 Stop {s['project_name']}",
+                    f"\U0001f5a5 Attach",
+                    callback_data=f"t:att:{s['session_id']}",
+                ),
+                InlineKeyboardButton(
+                    f"\U0001f6d1 Stop",
                     callback_data=f"s:k:{s['session_id']}",
-                )
+                ),
             ])
         buttons.append([InlineKeyboardButton("\U0001f3e0 Menu", callback_data="menu")])
 
@@ -586,6 +593,61 @@ async def _handle_sessions(query, data: str):
         msg = "\u2705 Session stopped." if stopped else "\u274c Session not found."
         await query.edit_message_text(
             msg,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("\u26a1 Sessions", callback_data="s:l"),
+                 InlineKeyboardButton("\U0001f3e0 Menu", callback_data="menu")],
+            ]),
+        )
+
+
+# --- Terminal ---
+
+async def _handle_terminal(query, data: str):
+    parts = data.split(":", 2)
+    action = parts[1]
+
+    if action == "new":
+        slug = parts[2]
+        project = project_scanner.get_project(slug)
+        if not project:
+            await query.edit_message_text("Project not found.")
+            return
+
+        await query.edit_message_text(f"\U0001f5a5 Starting terminal for *{project.name}*...", parse_mode="Markdown")
+        terminal = await terminal_manager.start_terminal(project.path, project.name)
+
+        await query.edit_message_text(
+            f"\U0001f5a5 *Terminal ready:* {project.name}\n\n"
+            f"\U0001f517 Open in browser:\n`{terminal.url}`\n\n"
+            f"\u23f1 Expires in 30 min or on disconnect\n"
+            f"\U0001f4bb tmux: `{terminal.tmux_session}`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("\U0001f4c2 Projects", callback_data="p:l:0"),
+                 InlineKeyboardButton("\U0001f3e0 Menu", callback_data="menu")],
+            ]),
+        )
+
+    elif action == "att":
+        session_id = parts[2]
+        from services.session_manager import _sessions
+        session = _sessions.get(session_id)
+        if not session or not session.tmux_session:
+            await query.edit_message_text("Session not found.")
+            return
+
+        await query.edit_message_text(f"\U0001f5a5 Attaching to *{session.project_name}*...", parse_mode="Markdown")
+        terminal = await terminal_manager.start_terminal(
+            session.project_path, session.project_name,
+            tmux_session=session.tmux_session,
+        )
+
+        await query.edit_message_text(
+            f"\U0001f5a5 *Terminal attached:* {session.project_name}\n\n"
+            f"\U0001f517 Open in browser:\n`{terminal.url}`\n\n"
+            f"\u23f1 Expires in 30 min or on disconnect\n"
+            f"\U0001f4bb tmux: `{session.tmux_session}`",
+            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("\u26a1 Sessions", callback_data="s:l"),
                  InlineKeyboardButton("\U0001f3e0 Menu", callback_data="menu")],
