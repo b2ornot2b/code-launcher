@@ -39,6 +39,7 @@ ERROR_PATTERNS = [
 ]
 
 TRUST_ERROR = re.compile(r"Workspace not trusted", re.IGNORECASE)
+WORKTREE_ERROR = re.compile(r"Worktree mode requires", re.IGNORECASE)
 
 # In-memory session tracking
 _sessions: Dict[str, SessionInfo] = {}
@@ -59,6 +60,7 @@ class SessionInfo:
     started_at: str
     log_file: str
     tmux_session: str = ""
+    experiment: bool = False
     status: str = "running"  # running, blocked, dead
     blocked_prompt: str = ""
 
@@ -104,9 +106,9 @@ def _tmux_get_pane_pid(name: str) -> int:
 
 
 def _make_tmux_name(project_name: str, session_name: Optional[str] = None) -> str:
-    """Generate tmux session name: ccl-<project>[-<name>]-<YYMMDDHHmm>"""
+    """Generate tmux session name: ccl-<project>[-<name>]-<YYMMDDHHmmss>"""
     slug = re.sub(r"[^a-z0-9]+", "-", project_name.lower()).strip("-")[:20]
-    ts = datetime.utcnow().strftime("%y%m%d%H%M")
+    ts = datetime.utcnow().strftime("%y%m%d%H%M%S")
     if session_name:
         name_slug = re.sub(r"[^a-z0-9]+", "-", session_name.lower()).strip("-")[:15]
         return f"{TMUX_PREFIX}{slug}-{name_slug}-{ts}"
@@ -117,7 +119,7 @@ def cleanup_stale_tmux() -> int:
     """Kill tmux sessions with our prefix that are dead (pane exited) or not tracked."""
     try:
         result = subprocess.run(
-            [TMUX, "list-sessions", "-F", "#{session_name} #{session_activity} #{?pane_dead,dead,alive}"],
+            [TMUX, "list-sessions", "-F", "#{session_name} #{?pane_dead,dead,alive}"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
@@ -131,14 +133,14 @@ def cleanup_stale_tmux() -> int:
     for line in result.stdout.strip().split("\n"):
         if not line:
             continue
-        parts = line.split(" ", 2)
+        parts = line.rsplit(" ", 1)
         name = parts[0]
-        status = parts[2] if len(parts) > 2 else ""
+        status = parts[1] if len(parts) > 1 else ""
 
         if not name.startswith(TMUX_PREFIX):
             continue
 
-        # Kill if dead or not tracked by our session manager
+        # Kill if dead pane or not tracked by our session manager
         if status == "dead" or name not in tracked_tmux:
             try:
                 subprocess.run(
@@ -247,7 +249,13 @@ async def _monitor_pipe_output(session_id: str, pipe_path: str) -> None:
                                 session.blocked_prompt = error_text
                                 _save_sessions()
                                 is_trust = TRUST_ERROR.search(error_text)
-                                prefix = "[TRUST]" if is_trust else "[EXITED]"
+                                is_worktree = WORKTREE_ERROR.search(error_text)
+                                if is_trust:
+                                    prefix = "[TRUST]"
+                                elif is_worktree:
+                                    prefix = "[WORKTREE]"
+                                else:
+                                    prefix = "[EXITED]"
                                 logger.error(f"Session {session_id} error: {error_text[:100]}")
                                 if _prompt_callback:
                                     try:
@@ -292,21 +300,20 @@ async def _monitor_pipe_output(session_id: str, pipe_path: str) -> None:
         logger.error(f"Monitor error for {session_id}: {e}")
 
 
-async def start_session(project_path: str, project_name: str, name: Optional[str] = None) -> SessionInfo:
+async def start_session(project_path: str, project_name: str, name: Optional[str] = None, experiment: bool = False) -> SessionInfo:
     session_id = uuid.uuid4().hex[:12]
     display_name = name or project_name
     tmux_name = _make_tmux_name(project_name, name)
     log_file = LOGS_DIR / f"{session_id}.log"
+    spawn_mode = "worktree" if experiment else "same-dir"
 
     env_path = f"/Users/b2/.local/bin:{os.environ.get('PATH', '')}"
 
-    # Shell wrapper: redirect all output to log AND keep tmux pane alive on exit
-    # Using script + tee so output goes to both the terminal (for tmux attach) and log file
     cmd = (
         f"export PATH='{env_path}'; "
-        f"{CLAUDE_BIN} remote-control --name '{display_name}' --spawn same-dir 2>&1 | tee -a {log_file}; "
+        f"{CLAUDE_BIN} remote-control --name '{display_name}' --spawn {spawn_mode} 2>&1 | tee -a {log_file}; "
         f"echo '[SESSION EXITED]' >> {log_file}; "
-        f"sleep 5"  # keep pane alive briefly so we can read exit output
+        f"sleep 5"
     )
 
     subprocess.run(
@@ -332,6 +339,7 @@ async def start_session(project_path: str, project_name: str, name: Optional[str
         started_at=datetime.utcnow().isoformat(),
         log_file=str(log_file),
         tmux_session=tmux_name,
+        experiment=experiment,
     )
     _sessions[session_id] = session
     _save_sessions()
@@ -422,6 +430,9 @@ async def trust_and_launch(project_path: str, project_name: str, name: Optional[
     # Kill the trust session
     subprocess.run([TMUX, "kill-session", "-t", tmux_name], capture_output=True)
     logger.info(f"Trust flow complete for {project_name} (sent={trust_sent})")
+
+    # Clean up any dead tmux sessions for this project before re-launching
+    cleanup_stale_tmux()
 
     # Now launch the actual remote-control session
     return await start_session(project_path, project_name, name)

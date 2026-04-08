@@ -13,6 +13,7 @@ router = APIRouter(prefix="/sessions", tags=["sessions"], dependencies=[Depends(
 class StartSessionRequest(BaseModel):
     project_slug: str
     name: str = ""
+    experiment: bool = False
 
 
 class RespondRequest(BaseModel):
@@ -34,6 +35,7 @@ async def start_session(req: StartSessionRequest):
         project_path=project.path,
         project_name=project.name,
         name=req.name or None,
+        experiment=req.experiment,
     )
     return {"data": session.to_dict()}
 
