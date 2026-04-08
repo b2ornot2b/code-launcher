@@ -15,6 +15,10 @@ class StartSessionRequest(BaseModel):
     name: str = ""
 
 
+class RespondRequest(BaseModel):
+    response: str  # e.g. "y", "n", "yes", "no"
+
+
 @router.get("")
 async def list_sessions():
     return {"data": session_manager.list_sessions()}
@@ -40,6 +44,14 @@ async def get_session(session_id: str):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"data": session}
+
+
+@router.post("/{session_id}/respond")
+async def respond_to_prompt(session_id: str, req: RespondRequest):
+    success = await session_manager.respond_to_prompt(session_id, req.response)
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found or not blocked")
+    return {"data": {"responded": True}}
 
 
 @router.delete("/{session_id}")

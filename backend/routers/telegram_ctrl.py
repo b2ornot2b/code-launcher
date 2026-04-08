@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from auth import require_api_key
-from telegram.pairing import generate_pairing_code, get_paired_users
+from tg_bot.pairing import generate_pairing_code, get_paired_users
 import config
 
 router = APIRouter(prefix="/telegram", tags=["telegram"], dependencies=[Depends(require_api_key)])

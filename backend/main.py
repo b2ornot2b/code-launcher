@@ -52,7 +52,7 @@ async def startup():
 
     if config.TELEGRAM_ENABLED and config.TELEGRAM_BOT_TOKEN:
         try:
-            from telegram.bot import start_telegram_bot
+            from tg_bot.bot import start_telegram_bot
             _telegram_app = await start_telegram_bot()
             logger.info("Telegram bot started")
         except Exception as e:

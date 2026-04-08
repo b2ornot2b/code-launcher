@@ -8,9 +8,53 @@ from typing import Callable
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from telegram.pairing import is_paired, verify_pairing_code, unpair_user
+from tg_bot.pairing import is_paired, verify_pairing_code, unpair_user, get_paired_users
 from services import project_scanner, session_manager, system_info
 from services.scaffolder import list_templates, create_project
+
+# Reference to the telegram bot app, set during startup
+_bot_app = None
+
+
+def set_bot_app(app):
+    global _bot_app
+    _bot_app = app
+
+
+async def notify_blocked_session(session_id: str, project_name: str, prompt_text: str):
+    """Called by session_manager when a session blocks on a prompt or exits with error."""
+    if not _bot_app:
+        return
+
+    import re as _re
+    clean = _re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", prompt_text)
+    clean = clean.strip()[:500]
+
+    is_error = clean.startswith("[EXITED]")
+    if is_error:
+        clean = clean[8:].strip()
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("<< Menu", callback_data="menu")],
+        ])
+        text = f"*Session failed:* {project_name}\n\n```\n{clean}\n```"
+    else:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Approve (y)", callback_data=f"s:y:{session_id}"),
+             InlineKeyboardButton("Deny (n)", callback_data=f"s:n:{session_id}")],
+            [InlineKeyboardButton("Stop Session", callback_data=f"s:k:{session_id}")],
+        ])
+        text = f"*Session blocked:* {project_name}\n\n```\n{clean}\n```\n\nApprove or deny?"
+
+    for user_id in get_paired_users():
+        try:
+            await _bot_app.bot.send_message(
+                chat_id=user_id,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify user {user_id}: {e}")
 
 
 async def _run_blocking(func, *args):
@@ -39,15 +83,16 @@ def require_paired(func: Callable):
 # --- /pair and /unpair ---
 
 async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"cmd_pair called by user {update.effective_user.id}, args={context.args}")
     if not context.args:
-        await update.message.reply_text("Usage: /pair <6-digit-code>")
+        await update.message.reply_text("Usage: /pair <code>")
         return
     code = context.args[0]
     user_id = update.effective_user.id
     if verify_pairing_code(code, user_id):
-        await update.message.reply_text("Paired successfully! You now have full access.")
+        await update.message.reply_text("Paired successfully! You now have full access. Send /start to begin.")
     else:
-        await update.message.reply_text("Invalid or expired pairing code.")
+        await update.message.reply_text("Invalid or expired pairing code. Get a new one from the API.")
 
 
 @require_paired
@@ -193,6 +238,26 @@ async def _handle_sessions(query, data: str):
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="Markdown",
         )
+
+    elif action in ("y", "n"):
+        session_id = parts[2]
+        response = "y" if action == "y" else "n"
+        success = await session_manager.respond_to_prompt(session_id, response)
+        if success:
+            await query.edit_message_text(
+                f"Sent '{response}' to session.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Sessions", callback_data="s:l"),
+                     InlineKeyboardButton("<< Menu", callback_data="menu")],
+                ]),
+            )
+        else:
+            await query.edit_message_text(
+                "Session not found or no longer blocked.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("<< Menu", callback_data="menu")],
+                ]),
+            )
 
     elif action == "k":
         session_id = parts[2]
