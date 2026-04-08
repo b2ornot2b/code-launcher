@@ -1,0 +1,182 @@
+#!/bin/bash
+# sprint — streamlined dev sprint workflow
+# Opus plans → Gemma executes → Opus reviews
+set -e
+
+OPENCODE_MODEL="b2studio/gemma-4-31b-it-8bit"
+PRD_FILE=".taskmaster/docs/prd.txt"
+
+_bold() { printf "\033[1m%s\033[0m\n" "$*"; }
+_dim() { printf "\033[2m%s\033[0m\n" "$*"; }
+_green() { printf "\033[32m%s\033[0m\n" "$*"; }
+_yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
+_cyan() { printf "\033[36m%s\033[0m\n" "$*"; }
+
+case "${1:-help}" in
+
+  plan)
+    # Step 1: Create/edit PRD, then parse into tasks
+    if [ ! -f "$PRD_FILE" ]; then
+      mkdir -p .taskmaster/docs
+      cat > "$PRD_FILE" << 'TEMPLATE'
+# Project Requirements Document
+
+## Overview
+[Describe what you're building]
+
+## Goals
+- [Goal 1]
+- [Goal 2]
+
+## Features
+### Feature 1
+[Description and acceptance criteria]
+
+### Feature 2
+[Description and acceptance criteria]
+
+## Technical Notes
+[Stack, constraints, existing code to build on]
+TEMPLATE
+      _green "Created $PRD_FILE"
+      _dim "Edit it with your sprint plan, then run: sprint plan"
+      ${EDITOR:-nano} "$PRD_FILE"
+    fi
+
+    _bold "Parsing PRD into tasks..."
+    task-master parse-prd "$PRD_FILE"
+
+    _bold "Analyzing complexity..."
+    task-master analyze-complexity --research 2>/dev/null || true
+
+    _bold "Expanding into subtasks..."
+    task-master expand --all --research 2>/dev/null || true
+
+    echo ""
+    _green "Sprint planned. Run 'sprint status' to see tasks."
+    ;;
+
+  next)
+    # Get next task and execute with OpenCode
+    _bold "Next task:"
+    echo ""
+    TASK=$(task-master next 2>&1)
+    echo "$TASK"
+    echo ""
+
+    # Extract task ID from output
+    TASK_ID=$(echo "$TASK" | grep -oE 'ID: [0-9]+' | head -1 | grep -oE '[0-9]+')
+
+    if [ -z "$TASK_ID" ]; then
+      _green "No pending tasks. Sprint complete!"
+      exit 0
+    fi
+
+    _yellow "Execute this task with Gemma 4? [Y/n]"
+    read -r confirm
+    if [ "$confirm" = "n" ] || [ "$confirm" = "N" ]; then
+      _dim "Skipped. Run 'sprint next' when ready."
+      exit 0
+    fi
+
+    # Extract task description for opencode
+    TASK_DESC=$(echo "$TASK" | sed -n '/Description/,/^$/p' | tail -n +2 | head -20)
+    if [ -z "$TASK_DESC" ]; then
+      TASK_DESC=$(echo "$TASK" | head -20)
+    fi
+
+    _cyan "Running OpenCode with Gemma 4..."
+    echo ""
+    opencode run --model "$OPENCODE_MODEL" "You are working on this project. Implement the following task. Read the relevant files first, then make changes.\n\nTask:\n$TASK_DESC"
+
+    echo ""
+    _yellow "Mark task $TASK_ID as done? [Y/n]"
+    read -r done_confirm
+    if [ "$done_confirm" != "n" ] && [ "$done_confirm" != "N" ]; then
+      task-master set-status --id="$TASK_ID" --status=done
+      _green "Task $TASK_ID done."
+      echo ""
+      _dim "Run 'sprint next' for the next task."
+    fi
+    ;;
+
+  done)
+    # Mark current/specified task as done
+    TASK_ID="${2}"
+    if [ -z "$TASK_ID" ]; then
+      TASK_ID=$(task-master next 2>&1 | grep -oE 'ID: [0-9]+' | head -1 | grep -oE '[0-9]+')
+    fi
+    if [ -n "$TASK_ID" ]; then
+      task-master set-status --id="$TASK_ID" --status=done
+      _green "Task $TASK_ID marked done."
+    fi
+    ;;
+
+  skip)
+    # Skip current task
+    TASK_ID="${2}"
+    if [ -z "$TASK_ID" ]; then
+      TASK_ID=$(task-master next 2>&1 | grep -oE 'ID: [0-9]+' | head -1 | grep -oE '[0-9]+')
+    fi
+    if [ -n "$TASK_ID" ]; then
+      task-master set-status --id="$TASK_ID" --status=deferred
+      _yellow "Task $TASK_ID skipped."
+    fi
+    ;;
+
+  status)
+    # Show sprint dashboard
+    _bold "Sprint Status"
+    echo ""
+    task-master list
+    ;;
+
+  review)
+    # Launch Claude Code to review all changes
+    _bold "Launching Claude Code for sprint review..."
+    claude --rc "Sprint Review"
+    ;;
+
+  run)
+    # Execute all pending tasks non-interactively
+    _bold "Running all pending tasks with Gemma 4..."
+    echo ""
+    while true; do
+      TASK=$(task-master next 2>&1)
+      TASK_ID=$(echo "$TASK" | grep -oE 'ID: [0-9]+' | head -1 | grep -oE '[0-9]+')
+
+      if [ -z "$TASK_ID" ]; then
+        _green "All tasks complete!"
+        break
+      fi
+
+      _cyan "Task $TASK_ID:"
+      echo "$TASK" | head -5
+      echo ""
+
+      TASK_DESC=$(echo "$TASK" | sed -n '/Description/,/^$/p' | tail -n +2 | head -20)
+      if [ -z "$TASK_DESC" ]; then
+        TASK_DESC=$(echo "$TASK" | head -20)
+      fi
+
+      opencode run --model "$OPENCODE_MODEL" "Implement this task. Read relevant files first.\n\nTask:\n$TASK_DESC"
+
+      task-master set-status --id="$TASK_ID" --status=done
+      _green "Task $TASK_ID done."
+      echo ""
+    done
+    ;;
+
+  *)
+    _bold "sprint — dev sprint workflow"
+    echo ""
+    echo "  sprint plan      Create PRD & parse into tasks"
+    echo "  sprint status    Show task dashboard"
+    echo "  sprint next      Execute next task with Gemma 4"
+    echo "  sprint done [id] Mark task as done"
+    echo "  sprint skip [id] Skip/defer a task"
+    echo "  sprint run       Execute ALL tasks (auto mode)"
+    echo "  sprint review    Launch Claude Code to review"
+    ;;
+
+esac
