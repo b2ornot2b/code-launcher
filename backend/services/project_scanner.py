@@ -7,6 +7,8 @@ from typing import Dict, List, Optional
 
 from config import PROJECT_MARKERS, PROJECT_ROOTS
 
+from services.settings import get_project_roots
+
 CACHE_TTL = 60  # seconds
 
 
@@ -41,7 +43,11 @@ def scan_projects(force: bool = False) -> List[ProjectInfo]:
     projects: List[ProjectInfo] = []
     seen_paths: set = set()
 
-    for root in PROJECT_ROOTS:
+    # Use settings-configured roots first, fall back to config.py defaults
+    custom_roots = get_project_roots()
+    roots = [Path(r) for r in custom_roots] if custom_roots else PROJECT_ROOTS
+
+    for root in roots:
         try:
             if not root.is_dir():
                 continue

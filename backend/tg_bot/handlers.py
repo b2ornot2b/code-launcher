@@ -4,13 +4,14 @@ import asyncio
 import logging
 import re as _re
 from functools import wraps
+from pathlib import Path
 from typing import Callable, Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from tg_bot.pairing import is_paired, verify_pairing_code, unpair_user, get_paired_users
-from services import project_scanner, session_manager, system_info
+from services import project_scanner, session_manager, system_info, settings
 from services.scaffolder import list_templates, create_project
 
 logger = logging.getLogger(__name__)
@@ -139,7 +140,11 @@ async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
     code = context.args[0]
     user_id = update.effective_user.id
     if verify_pairing_code(code, user_id):
-        await update.message.reply_text("\u2705 Paired successfully! Send /start to begin.")
+        if settings.is_configured():
+            await update.message.reply_text("\u2705 Paired successfully! Send /start to begin.")
+        else:
+            # First-time onboarding
+            await _send_onboarding(update.message)
     else:
         await update.message.reply_text("\u274c Invalid or expired pairing code.")
 
@@ -148,6 +153,155 @@ async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_unpair(update: Update, context: ContextTypes.DEFAULT_TYPE):
     unpair_user(update.effective_user.id)
     await update.message.reply_text("\U0001f513 Unpaired.")
+
+
+# --- Onboarding ---
+
+async def _send_onboarding(message):
+    """First-time setup wizard after pairing."""
+    claude = await _run_blocking(settings.check_claude_cli)
+    dirs = await _run_blocking(settings.detect_dev_directories)
+
+    lines = [
+        "\u2705 *Paired!* Let's set up your launcher.\n",
+        "\U0001f4bb *Claude CLI:* " + ("`" + claude["version"] + "`" if claude["installed"] else "\u274c Not found at " + claude["path"]),
+        "",
+        "\U0001f4c2 *Detected project directories:*",
+    ]
+
+    buttons = []
+    for d in dirs:
+        lines.append(f"\u2022 `{d['path']}` ({d['project_count']} folders)")
+        buttons.append([InlineKeyboardButton(
+            f"\u2795 {d['path']}", callback_data=f"ob:add:{d['path'][:50]}",
+        )])
+
+    if not dirs:
+        lines.append("\u2014 No common directories found")
+
+    lines.append("\nSelect directories to scan for projects:")
+    buttons.append([InlineKeyboardButton("\u2795 Add custom path", callback_data="ob:custom")])
+    buttons.append([InlineKeyboardButton("\u2705 Done", callback_data="ob:done")])
+
+    await message.reply_text(
+        "\n".join(lines), parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _handle_onboarding(query, data: str, context):
+    parts = data.split(":", 2)
+    action = parts[1]
+
+    if action == "add":
+        path = parts[2]
+        added = settings.add_project_root(path)
+        roots = settings.get_project_roots()
+
+        # Refresh and show updated state
+        project_scanner.scan_projects(force=True)
+        projects = project_scanner.scan_projects()
+
+        lines = [
+            f"\u2705 Added `{path}`\n" if added else f"\u26a0\ufe0f Already added or not found\n",
+            f"\U0001f4c2 *Configured paths:* ({len(roots)})",
+        ]
+        for r in roots:
+            lines.append(f"\u2022 `{r}`")
+        lines.append(f"\n\U0001f50d Found *{len(projects)}* projects")
+
+        # Show remaining detected dirs not yet added
+        dirs = await _run_blocking(settings.detect_dev_directories)
+        buttons = []
+        for d in dirs:
+            if d["path"] not in roots:
+                buttons.append([InlineKeyboardButton(
+                    f"\u2795 {d['path']}", callback_data=f"ob:add:{d['path'][:50]}",
+                )])
+        buttons.append([InlineKeyboardButton("\u2795 Add custom path", callback_data="ob:custom")])
+        buttons.append([InlineKeyboardButton("\u2705 Done \u2014 go to menu", callback_data="ob:done")])
+
+        await query.edit_message_text(
+            "\n".join(lines), parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    elif action == "custom":
+        context.user_data["awaiting_custom_path"] = True
+        await query.edit_message_text(
+            "\U0001f4c2 Send the full path to your project directory as a text message.\n\n"
+            "Example: `/Users/me/Projects`",
+            parse_mode="Markdown",
+        )
+
+    elif action == "done":
+        if not settings.is_configured():
+            # Auto-add any detected directories as a sensible default
+            dirs = await _run_blocking(settings.detect_dev_directories)
+            for d in dirs:
+                settings.add_project_root(d["path"])
+
+        project_scanner.scan_projects(force=True)
+        text = await _build_menu_text()
+        sessions = session_manager.list_sessions()
+        await query.edit_message_text(
+            text, reply_markup=_menu_keyboard(len(sessions)), parse_mode="Markdown",
+        )
+
+    elif action == "rm":
+        path = parts[2]
+        settings.remove_project_root(path)
+        project_scanner.scan_projects(force=True)
+        await _show_settings(query)
+
+    elif action == "detect":
+        dirs = await _run_blocking(settings.detect_dev_directories)
+        roots = settings.get_project_roots()
+        for d in dirs:
+            if d["path"] not in roots:
+                settings.add_project_root(d["path"])
+        project_scanner.scan_projects(force=True)
+        await _show_settings(query)
+
+    elif action == "rescan":
+        project_scanner.scan_projects(force=True)
+        await _show_settings(query)
+
+
+async def _show_settings(query):
+    """Show the settings/configuration screen."""
+    roots = settings.get_project_roots()
+    claude = await _run_blocking(settings.check_claude_cli)
+    projects = project_scanner.scan_projects()
+
+    lines = [
+        "\u2699\ufe0f *Settings*\n",
+        "\U0001f4bb Claude CLI: " + ("`" + claude["version"] + "`" if claude["installed"] else "\u274c Not found"),
+        f"\U0001f50d {len(projects)} projects found\n",
+        "\U0001f4c2 *Project directories:*",
+    ]
+    buttons = []
+    for r in roots:
+        lines.append(f"\u2022 `{r}`")
+        buttons.append([InlineKeyboardButton(f"\u274c Remove {r}", callback_data=f"ob:rm:{r[:50]}")])
+
+    if not roots:
+        lines.append("\u2014 None configured")
+
+    dirs = await _run_blocking(settings.detect_dev_directories)
+    untracked = [d for d in dirs if d["path"] not in roots]
+    if untracked:
+        buttons.append([InlineKeyboardButton(
+            f"\u2795 Add detected dirs ({len(untracked)})", callback_data="ob:detect",
+        )])
+    buttons.append([InlineKeyboardButton("\u2795 Add custom path", callback_data="ob:custom")])
+    buttons.append([InlineKeyboardButton("\U0001f504 Re-scan projects", callback_data="ob:rescan")])
+    buttons.append([InlineKeyboardButton("\U0001f3e0 Menu", callback_data="menu")])
+
+    await query.edit_message_text(
+        "\n".join(lines), parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
 
 
 # --- Main Menu ---
@@ -179,6 +333,7 @@ def _menu_keyboard(session_count: int = 0) -> InlineKeyboardMarkup:
          InlineKeyboardButton("\u2795 New Project", callback_data="sc:l")],
         [InlineKeyboardButton(sess_label, callback_data="s:l"),
          InlineKeyboardButton("\U0001f527 Maintenance", callback_data="m:l")],
+        [InlineKeyboardButton("\u2699\ufe0f Settings", callback_data="ob:settings")],
     ])
 
 
@@ -207,6 +362,11 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_scaffold(query, data, context)
     elif data.startswith("m:"):
         await _handle_maintenance(query, data)
+    elif data.startswith("ob:"):
+        if data == "ob:settings":
+            await _show_settings(query)
+        else:
+            await _handle_onboarding(query, data, context)
     elif data == "menu":
         text = await _build_menu_text()
         sessions = session_manager.list_sessions()
@@ -470,6 +630,33 @@ async def _handle_scaffold(query, data: str, context):
 
 @require_paired
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Handle custom path input for settings
+    if context.user_data.get("awaiting_custom_path"):
+        del context.user_data["awaiting_custom_path"]
+        path = update.message.text.strip()
+        if Path(path).is_dir():
+            settings.add_project_root(path)
+            project_scanner.scan_projects(force=True)
+            projects = project_scanner.scan_projects()
+            await update.message.reply_text(
+                f"\u2705 Added `{path}`\n\U0001f50d Found *{len(projects)}* projects",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\u2699\ufe0f Settings", callback_data="ob:settings"),
+                     InlineKeyboardButton("\U0001f3e0 Menu", callback_data="menu")],
+                ]),
+            )
+        else:
+            await update.message.reply_text(
+                f"\u274c Directory not found: `{path}`",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("\u2699\ufe0f Settings", callback_data="ob:settings"),
+                     InlineKeyboardButton("\U0001f3e0 Menu", callback_data="menu")],
+                ]),
+            )
+        return
+
     template = context.user_data.get("scaffold_template")
     if not template:
         return
