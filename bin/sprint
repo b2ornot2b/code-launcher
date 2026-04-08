@@ -19,9 +19,10 @@ case "${1:-help}" in
     if [ ! -d ".taskmaster" ]; then
       _bold "Initializing Task Master..."
       task-master init --yes 2>&1 | tail -3
+    fi
 
-      # Apply local Gemma 4 config (overwrite default Anthropic/Perplexity)
-      _bold "Configuring local Gemma 4 model..."
+    # Always ensure Gemma 4 config (fixes cases where init created default Anthropic config)
+    if [ -d ".taskmaster" ]; then
       cat > .taskmaster/config.json << 'TMCONFIG'
 {
   "models": {
@@ -58,7 +59,6 @@ case "${1:-help}" in
   }
 }
 TMCONFIG
-      _green "Task Master configured with local Gemma 4"
     fi
 
     # Step 1: Check PRD exists
