@@ -482,6 +482,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"\u274c {result['error']}")
         return
 
+    # Invalidate project cache so the new project is immediately discoverable
+    project_scanner.scan_projects(force=True)
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("\U0001f680 Launch Claude RC", callback_data=f"p:rc:{result['slug']}")],
         [InlineKeyboardButton("\U0001f3e0 Menu", callback_data="menu")],
