@@ -1,0 +1,37 @@
+{
+  "models": {
+    "main": {
+      "provider": "openai",
+      "modelId": "gemma-4-31b-it-8bit",
+      "maxTokens": 8192,
+      "temperature": 0.2,
+      "baseURL": "http://b2studio.local:8000/v1"
+    },
+    "research": {
+      "provider": "openai",
+      "modelId": "gemma-4-31b-it-8bit",
+      "maxTokens": 8192,
+      "temperature": 0.1,
+      "baseURL": "http://b2studio.local:8000/v1"
+    },
+    "fallback": {
+      "provider": "openai",
+      "modelId": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
+      "maxTokens": 8192,
+      "temperature": 0.2,
+      "baseURL": "http://b2studio.local:8000/v1"
+    }
+  },
+  "global": {
+    "logLevel": "info",
+    "debug": false,
+    "defaultNumTasks": 10,
+    "defaultSubtasks": 5,
+    "defaultPriority": "medium",
+    "projectName": "Claude Code Launcher",
+    "responseLanguage": "English",
+    "enableCodebaseAnalysis": true,
+    "enableProxy": false,
+    "anonymousTelemetry": false
+  }
+}
