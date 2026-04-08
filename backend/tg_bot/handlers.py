@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from functools import wraps
-from typing import Callable
+from typing import Callable, Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -14,6 +14,8 @@ from services.scaffolder import list_templates, create_project
 
 # Reference to the telegram bot app, set during startup
 _bot_app = None
+# Cache project info for dead sessions (so Trust & Retry can find the path)
+_dead_session_info: Dict[str, Dict] = {}
 
 
 def set_bot_app(app):
@@ -21,7 +23,7 @@ def set_bot_app(app):
     _bot_app = app
 
 
-async def notify_blocked_session(session_id: str, project_name: str, prompt_text: str):
+async def notify_blocked_session(session_id: str, project_name: str, prompt_text: str, project_path: str = ""):
     """Called by session_manager when a session blocks on a prompt or exits with error."""
     if not _bot_app:
         return
@@ -30,8 +32,21 @@ async def notify_blocked_session(session_id: str, project_name: str, prompt_text
     clean = _re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", prompt_text)
     clean = clean.strip()[:500]
 
+    is_trust = clean.startswith("[TRUST]")
     is_error = clean.startswith("[EXITED]")
-    if is_error:
+
+    if is_trust:
+        clean = clean[7:].strip()
+        _dead_session_info[session_id] = {
+            "project_name": project_name,
+            "project_path": project_path,
+        }
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Trust & Retry", callback_data=f"s:tr:{session_id}")],
+            [InlineKeyboardButton("<< Menu", callback_data="menu")],
+        ])
+        text = f"*Workspace not trusted:* {project_name}\n\n```\n{clean}\n```\n\nTrust this workspace and retry?"
+    elif is_error:
         clean = clean[8:].strip()
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("<< Menu", callback_data="menu")],
@@ -254,6 +269,44 @@ async def _handle_sessions(query, data: str):
         else:
             await query.edit_message_text(
                 "Session not found or no longer blocked.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("<< Menu", callback_data="menu")],
+                ]),
+            )
+
+    elif action == "tr":
+        # Trust & Retry: trust the workspace then re-launch remote-control
+        session_id = parts[2]
+        info = _dead_session_info.pop(session_id, None)
+        if not info or "project_path" not in info:
+            await query.edit_message_text(
+                "Could not find project info for retry.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("<< Menu", callback_data="menu")],
+                ]),
+            )
+            return
+
+        await query.edit_message_text(f"Trusting workspace for *{info['project_name']}*...", parse_mode="Markdown")
+
+        try:
+            session = await session_manager.trust_and_launch(
+                info["project_path"], info["project_name"]
+            )
+            await query.edit_message_text(
+                f"Session started for *{info['project_name']}*\n"
+                f"Session ID: `{session.session_id}`\n"
+                f"PID: {session.pid}\n\n"
+                f"Open Claude Code mobile app to connect.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("<< Menu", callback_data="menu")],
+                ]),
+            )
+        except Exception as e:
+            logger.error(f"Trust & retry failed: {e}")
+            await query.edit_message_text(
+                f"Trust & retry failed: {str(e)[:200]}",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("<< Menu", callback_data="menu")],
                 ]),
