@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from pathlib import Path
 from typing import List
 
@@ -19,6 +20,27 @@ PORT: int = int(os.environ.get("PORT", "8420"))
 # Telegram
 TELEGRAM_ENABLED: bool = os.environ.get("TELEGRAM_ENABLED", "false").lower() == "true"
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
+# Machine identity
+MACHINE_NAME: str = os.environ.get("MACHINE_NAME", socket.gethostname())
+IS_HUB: bool = TELEGRAM_ENABLED  # The machine running the bot is the hub
+
+# Tailscale CLI path (macOS App Store uses the long path)
+_TAILSCALE_PATHS = [
+    "tailscale",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    "/usr/bin/tailscale",
+    "/usr/local/bin/tailscale",
+]
+
+def _find_tailscale() -> str:
+    import shutil
+    for p in _TAILSCALE_PATHS:
+        if shutil.which(p):
+            return p
+    return "tailscale"
+
+TAILSCALE_BIN: str = os.environ.get("TAILSCALE_BIN", _find_tailscale())
 
 # Paths
 _default_roots = str(Path.home() / "Developer" / "mine")

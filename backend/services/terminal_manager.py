@@ -52,18 +52,18 @@ def _is_pid_alive(pid: int) -> bool:
 def _get_host_ip() -> str:
     """Get the best IP for terminal URLs. Prefers Tailscale, falls back to LAN."""
     import socket
-    # Try Tailscale (100.x.x.x)
     try:
-        for line in subprocess.run(
-            ["ifconfig"], capture_output=True, text=True, timeout=5,
-        ).stdout.split("\n"):
-            line = line.strip()
-            if line.startswith("inet 100."):
-                return line.split()[1]
-    except Exception:
+        from config import TAILSCALE_BIN
+        result = subprocess.run(
+            [TAILSCALE_BIN, "ip", "-4"],
+            capture_output=True, text=True, timeout=5,
+        )
+        ip = result.stdout.strip()
+        if result.returncode == 0 and ip:
+            return ip
+    except (FileNotFoundError, Exception):
         pass
 
-    # Fall back to hostname resolution or LAN IP
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("10.255.255.255", 1))

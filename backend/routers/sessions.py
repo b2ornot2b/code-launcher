@@ -62,3 +62,19 @@ async def stop_session(session_id: str):
     if not stopped:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"data": {"stopped": True}}
+
+
+class TrustAndLaunchRequest(BaseModel):
+    project_path: str
+    project_name: str
+    name: str = ""
+
+
+@router.post("/trust-and-launch", status_code=201)
+async def trust_and_launch(req: TrustAndLaunchRequest):
+    session = await session_manager.trust_and_launch(
+        project_path=req.project_path,
+        project_name=req.project_name,
+        name=req.name or None,
+    )
+    return {"data": session.to_dict()}

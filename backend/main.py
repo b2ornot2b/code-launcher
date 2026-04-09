@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 import config
-from routers import projects, sessions, system, power, scaffold, telegram_ctrl, terminal
+from routers import projects, sessions, system, power, scaffold, telegram_ctrl, terminal, settings_api
 from services.session_manager import recover_sessions, stop_all_sessions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -35,6 +35,7 @@ app.include_router(power.router, prefix="/api/v1")
 app.include_router(scaffold.router, prefix="/api/v1")
 app.include_router(telegram_ctrl.router, prefix="/api/v1")
 app.include_router(terminal.router, prefix="/api/v1")
+app.include_router(settings_api.router, prefix="/api/v1")
 
 # Track telegram app for clean shutdown
 _telegram_app = None
@@ -42,7 +43,21 @@ _telegram_app = None
 
 @app.get("/api/v1/health")
 async def health():
-    return {"status": "ok"}
+    from services.hub_pairing import is_paired
+    return {
+        "status": "ok",
+        "machine_name": config.MACHINE_NAME,
+        "registration_open": not is_paired(),
+    }
+
+
+@app.post("/api/v1/pair-hub")
+async def pair_hub():
+    from services.hub_pairing import pair_hub as do_pair
+    result = do_pair()
+    if result is None:
+        raise HTTPException(status_code=403, detail="Already paired")
+    return {"data": result}
 
 
 @app.on_event("startup")
