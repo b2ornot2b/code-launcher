@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -63,13 +64,22 @@ class MachineRegistry:
                 for m in self._machines.values()
             ]
         }
+        tmp = None
         try:
             fd, tmp = tempfile.mkstemp(dir=str(BASE_DIR), suffix=".tmp")
             with open(fd, "w") as f:
                 json.dump(data, f, indent=2)
+            os.chmod(tmp, 0o600)
             Path(tmp).replace(MACHINES_FILE)
+            tmp = None  # successfully replaced, don't clean up
         except OSError as e:
             logger.error(f"Failed to save machines.json: {e}")
+        finally:
+            if tmp:
+                try:
+                    Path(tmp).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     # --- Self-registration (hub registers itself) ---
 

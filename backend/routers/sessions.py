@@ -72,6 +72,12 @@ class TrustAndLaunchRequest(BaseModel):
 
 @router.post("/trust-and-launch", status_code=201)
 async def trust_and_launch(req: TrustAndLaunchRequest):
+    from pathlib import Path
+    from services.settings import get_project_roots
+    resolved = str(Path(req.project_path).resolve())
+    roots = get_project_roots()
+    if not any(resolved.startswith(str(Path(r).resolve())) for r in roots):
+        raise HTTPException(status_code=403, detail="Path not within configured project roots")
     session = await session_manager.trust_and_launch(
         project_path=req.project_path,
         project_name=req.project_name,

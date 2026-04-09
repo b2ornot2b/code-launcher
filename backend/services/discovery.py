@@ -75,21 +75,22 @@ async def discover_nodes(registry) -> List[dict]:
         return []
 
     discovered = []
+    sem = asyncio.Semaphore(20)
 
     async def check_peer(ip):
-        try:
-            url, health = await probe_peer(ip)
-            if registry.is_known_url(url):
-                return
-            if not health.get("registration_open", False):
-                return  # already paired with another hub
-            name = health.get("machine_name", ip)
-            mid = registry.add_pending(name, url)
-            discovered.append({"id": mid, "name": name, "url": url})
-        except Exception:
-            pass  # not a CCL instance or unreachable
+        async with sem:
+            try:
+                url, health = await probe_peer(ip)
+                if registry.is_known_url(url):
+                    return
+                if not health.get("registration_open", False):
+                    return  # already paired with another hub
+                name = health.get("machine_name", ip)
+                mid = registry.add_pending(name, url)
+                discovered.append({"id": mid, "name": name, "url": url})
+            except Exception:
+                pass  # not a CCL instance or unreachable
 
-    # Probe all peers concurrently
     await asyncio.gather(*[check_peer(ip) for ip in peers])
 
     if discovered:

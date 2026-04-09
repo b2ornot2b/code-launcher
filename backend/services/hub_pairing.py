@@ -1,7 +1,9 @@
 """Node-side hub pairing: one-time API key exchange for Tailscale discovery."""
 from __future__ import annotations
 
+import fcntl
 import logging
+import os
 from pathlib import Path
 
 from config import BASE_DIR, API_KEY, MACHINE_NAME
@@ -9,33 +11,54 @@ from config import BASE_DIR, API_KEY, MACHINE_NAME
 logger = logging.getLogger(__name__)
 
 _PAIRED_FLAG = BASE_DIR / ".hub_paired"
-_is_paired: bool = _PAIRED_FLAG.exists()
+_lock_path = BASE_DIR / ".hub_paired.lock"
 
 
 def is_paired() -> bool:
-    return _is_paired
+    return _PAIRED_FLAG.exists()
 
 
 def pair_hub():
-    """Called once by the hub during registration. Returns API key, then locks."""
-    global _is_paired
-    if _is_paired:
-        return None  # already paired
-    _is_paired = True
+    """Called once by the hub during registration. Returns API key, then locks.
+
+    Uses file locking to prevent race conditions where two concurrent
+    requests could both succeed.
+    """
+    # Fast path: already paired
+    if _PAIRED_FLAG.exists():
+        return None
+
+    # Acquire exclusive lock to prevent race condition
+    lock_fd = os.open(str(_lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
     try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, BlockingIOError):
+        os.close(lock_fd)
+        return None  # another request is pairing right now
+
+    try:
+        # Re-check after acquiring lock
+        if _PAIRED_FLAG.exists():
+            return None
+
+        # Write the flag file — if this fails, pairing fails
         _PAIRED_FLAG.write_text("paired")
+        os.chmod(str(_PAIRED_FLAG), 0o600)
+        logger.info(f"Hub paired with this node ({MACHINE_NAME})")
+        return {"api_key": API_KEY, "machine_name": MACHINE_NAME}
     except OSError as e:
-        logger.warning(f"Could not write paired flag: {e}")
-    logger.info(f"Hub paired with this node ({MACHINE_NAME})")
-    return {"api_key": API_KEY, "machine_name": MACHINE_NAME}
+        logger.error(f"Pairing failed — could not write flag file: {e}")
+        return None
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def unpair_hub() -> None:
     """Reset pairing (for re-registration)."""
-    global _is_paired
-    _is_paired = False
     try:
         _PAIRED_FLAG.unlink(missing_ok=True)
+        _lock_path.unlink(missing_ok=True)
     except OSError:
         pass
     logger.info("Hub pairing reset")

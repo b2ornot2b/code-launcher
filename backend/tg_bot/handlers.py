@@ -264,21 +264,40 @@ async def cmd_addmachine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target = context.args[0]
-    if not target.startswith("http"):
-        target = f"http://{target}:8420"
+
+    # Extract IP/hostname from input
+    import ipaddress
+    import re as _probe_re
+    if target.startswith("http"):
+        match = _probe_re.search(r"https?://([^:/]+)", target)
+        ip_str = match.group(1) if match else target
+    else:
+        ip_str = target
+
+    # Validate it's a proper IP, not a hostname (prevents SSRF via DNS)
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        await update.message.reply_text(
+            "\u274c Please provide an IP address, not a hostname.",
+        )
+        return
+
+    # Block link-local, loopback, and cloud metadata IPs
+    if addr.is_loopback or addr.is_link_local or addr.is_multicast:
+        await update.message.reply_text("\u274c Invalid IP address range.")
+        return
 
     registry = get_registry()
-    if registry.is_known_url(target):
+    target_url = f"http://{ip_str}:8420"
+    if registry.is_known_url(target_url):
         await update.message.reply_text("\u26a0\ufe0f This machine is already registered.")
         return
 
     # Probe the target
     try:
         from services.discovery import probe_peer
-        import re as _probe_re
-        match = _probe_re.search(r"https?://([^:/]+)", target)
-        ip = match.group(1) if match else target
-        url, health = await probe_peer(ip)
+        url, health = await probe_peer(ip_str)
     except Exception:
         await update.message.reply_text(
             f"\u274c Could not reach CCL at `{target}`\n\nMake sure the node is running.",
@@ -573,8 +592,7 @@ def _menu_keyboard(session_count: int = 0) -> InlineKeyboardMarkup:
 
 @require_paired
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = await _build_menu_text()
-    session_count = await _count_sessions()
+    text, session_count = await _build_menu_text()
     await update.effective_message.reply_text(
         text, reply_markup=_menu_keyboard(session_count), parse_mode="Markdown",
     )
