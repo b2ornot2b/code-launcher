@@ -3,9 +3,13 @@ __pycache__/
 .venv/
 backend/.venv/
 backend/.env
+backend/.env.*
+backend/data/
+backend/.shared/
 backend/sessions/
 backend/logs/
 backend/paired_users.json
+backend/machines.json
 .DS_Store
 app/.dart_tool/
 app/build/

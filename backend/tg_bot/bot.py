@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from telegram.error import Conflict
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from config import TELEGRAM_BOT_TOKEN
@@ -53,9 +54,18 @@ async def start_telegram_bot() -> Application:
     generate_pairing_code()
     logger.info("Telegram bot ready. Get pairing code via /api/v1/telegram/pair-code")
 
+    def _polling_error_callback(error):
+        if isinstance(error, Conflict):
+            logger.warning("Telegram polling conflict — another instance may be running")
+            return
+        logger.exception("Exception while polling for updates.", exc_info=error)
+
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
+    await app.updater.start_polling(
+        drop_pending_updates=True,
+        error_callback=_polling_error_callback,
+    )
     logger.info("Telegram bot polling started")
 
     # Wire up prompt notifications: session_manager -> telegram (local sessions)

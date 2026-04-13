@@ -8,12 +8,12 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from config import BASE_DIR, API_KEY, MACHINE_NAME, PORT
+from config import DATA_DIR, API_KEY, MACHINE_NAME, PORT
 from services.machine_client import MachineClient
 
 logger = logging.getLogger(__name__)
 
-MACHINES_FILE = BASE_DIR / "machines.json"
+MACHINES_FILE = DATA_DIR / "machines.json"
 
 # Singleton registry
 _registry = None  # type: Optional[MachineRegistry]
@@ -66,7 +66,7 @@ class MachineRegistry:
         }
         tmp = None
         try:
-            fd, tmp = tempfile.mkstemp(dir=str(BASE_DIR), suffix=".tmp")
+            fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), suffix=".tmp")
             with open(fd, "w") as f:
                 json.dump(data, f, indent=2)
             os.chmod(tmp, 0o600)
@@ -84,8 +84,9 @@ class MachineRegistry:
     # --- Self-registration (hub registers itself) ---
 
     def ensure_self_registered(self):
-        """Register the local machine if not already present."""
-        if "local" not in self._machines:
+        """Register or update the local machine entry."""
+        local = self._machines.get("local")
+        if local is None:
             self._machines["local"] = MachineClient(
                 machine_id="local",
                 name=MACHINE_NAME,
@@ -95,6 +96,24 @@ class MachineRegistry:
             self._machines["local"].online = True
             self.save()
             logger.info(f"Self-registered as '{MACHINE_NAME}' (local)")
+        elif local.name != MACHINE_NAME or local.api_key != API_KEY:
+            local.name = MACHINE_NAME
+            local.api_key = API_KEY
+            local.base_url = f"http://localhost:{PORT}"
+            local.online = True
+            self.save()
+            logger.info(f"Updated local machine to '{MACHINE_NAME}'")
+        else:
+            local.online = True
+
+    def update_local_url(self, url):
+        # type: (str) -> None
+        """Update the local machine's URL (e.g. with Tailscale IP)."""
+        local = self._machines.get("local")
+        if local and local.base_url != url:
+            local.base_url = url
+            self.save()
+            logger.info(f"Updated local URL to {url}")
 
     # --- Discovery / Registration ---
 
@@ -108,16 +127,38 @@ class MachineRegistry:
                 return True
         return False
 
-    def add_pending(self, name: str, url: str) -> str:
-        """Add a discovered node as pending approval. Returns machine_id."""
-        # Generate id from name (slugified)
+    def _generate_id(self, name):
+        # type: (str) -> str
+        """Generate a unique machine ID from a name."""
         base_id = name.lower().replace(" ", "-").replace(".", "-")
         mid = base_id
         counter = 2
         while mid in self._machines or mid in self._pending:
             mid = f"{base_id}-{counter}"
             counter += 1
+        return mid
 
+    async def _pair_and_register(self, mid, name, url):
+        # type: (str, str, str) -> Optional[MachineClient]
+        """Call pair-hub on a remote node and register it."""
+        temp = MachineClient(mid, name, url, "")
+        result = await temp.pair_hub()
+        if not result:
+            return None
+        client = MachineClient(
+            machine_id=mid,
+            name=result.get("machine_name", name),
+            base_url=url,
+            api_key=result["api_key"],
+        )
+        client.online = True
+        self._machines[mid] = client
+        self.save()
+        return client
+
+    def add_pending(self, name: str, url: str) -> str:
+        """Add a discovered node as pending approval. Returns machine_id."""
+        mid = self._generate_id(name)
         self._pending[mid] = {"name": name, "url": url}
         logger.info(f"New machine pending approval: {name} ({url}) as {mid}")
 
@@ -134,25 +175,23 @@ class MachineRegistry:
         info = self._pending.pop(machine_id, None)
         if not info:
             return None
-
-        # Create a temporary client to call pair-hub (no API key yet)
-        temp = MachineClient(machine_id, info["name"], info["url"], "")
-        result = await temp.pair_hub()
-        if not result:
+        client = await self._pair_and_register(machine_id, info["name"], info["url"])
+        if not client:
             logger.warning(f"pair-hub failed for {machine_id} — may already be paired")
-            # Try with empty key anyway (already paired nodes)
             return None
-
-        client = MachineClient(
-            machine_id=machine_id,
-            name=result.get("machine_name", info["name"]),
-            base_url=info["url"],
-            api_key=result["api_key"],
-        )
-        client.online = True
-        self._machines[machine_id] = client
-        self.save()
         logger.info(f"Machine approved: {client.name} ({machine_id})")
+        return client
+
+    async def auto_approve(self, name: str, url: str) -> Optional[MachineClient]:
+        """Auto-approve a trusted machine (shared codebase). Skips pending queue."""
+        if self.is_known_url(url):
+            return None
+        mid = self._generate_id(name)
+        client = await self._pair_and_register(mid, name, url)
+        if not client:
+            logger.warning(f"auto-approve pair-hub failed for {name} ({url})")
+            return None
+        logger.info(f"Auto-approved trusted machine: {client.name} ({mid})")
         return client
 
     def reject(self, machine_id: str) -> bool:

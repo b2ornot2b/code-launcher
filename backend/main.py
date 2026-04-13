@@ -44,10 +44,12 @@ _telegram_app = None
 @app.get("/api/v1/health")
 async def health():
     from services.hub_pairing import is_paired
+    from services.shared_trust import get_trust_token_hash
     return {
         "status": "ok",
         "machine_name": config.MACHINE_NAME,
         "registration_open": not is_paired(),
+        "trust_hash": get_trust_token_hash(),
     }
 
 
@@ -66,13 +68,28 @@ async def startup():
     recovered = recover_sessions()
     logger.info(f"Recovered {recovered} active session(s)")
 
+    # Update local machine URL with Tailscale IP for display
+    try:
+        from services.discovery import get_tailscale_self_ip
+        from services.machine_registry import get_registry
+        ts_ip = await get_tailscale_self_ip()
+        if ts_ip:
+            get_registry().update_local_url(f"http://{ts_ip}:{config.PORT}")
+    except Exception as e:
+        logger.debug(f"Could not get Tailscale self IP: {e}")
+
     if config.TELEGRAM_ENABLED and config.TELEGRAM_BOT_TOKEN:
-        try:
-            from tg_bot.bot import start_telegram_bot
-            _telegram_app = await start_telegram_bot()
-            logger.info("Telegram bot started")
-        except Exception as e:
-            logger.error(f"Failed to start Telegram bot: {e}")
+        from tg_bot.leader import try_acquire_leadership
+        if try_acquire_leadership():
+            config.set_hub_status(True)
+            try:
+                from tg_bot.bot import start_telegram_bot
+                _telegram_app = await start_telegram_bot()
+                logger.info("Telegram bot started (this machine is hub)")
+            except Exception as e:
+                logger.error(f"Failed to start Telegram bot: {e}")
+        else:
+            logger.info("Running as node (another machine is Telegram hub)")
 
 
 @app.on_event("shutdown")
@@ -89,6 +106,13 @@ async def shutdown():
             logger.info("Telegram bot stopped")
         except Exception as e:
             logger.warning(f"Telegram bot shutdown error: {e}")
+
+    # Release Telegram leadership lock
+    try:
+        from tg_bot.leader import release_leadership
+        release_leadership()
+    except Exception:
+        pass
 
     # Stop all Claude sessions
     stopped = await stop_all_sessions()

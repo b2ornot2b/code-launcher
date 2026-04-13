@@ -7,11 +7,11 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List
 
-from config import BASE_DIR, CLAUDE_BIN
+from config import DATA_DIR, CLAUDE_BIN
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_FILE = BASE_DIR / "settings.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
 
 # Common developer directories to auto-detect
 COMMON_DEV_DIRS = [

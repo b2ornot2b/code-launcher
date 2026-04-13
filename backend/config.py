@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import socket
 from pathlib import Path
@@ -7,8 +8,15 @@ from typing import List
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / ".env")
+_base = Path(__file__).parent
+load_dotenv(_base / ".env")
+# Per-machine override: .env.<hostname> takes precedence
+_hostname = socket.gethostname()
+_host_env = _base / f".env.{_hostname}"
+if _host_env.exists():
+    load_dotenv(_host_env, override=True)
 
+_logger = logging.getLogger(__name__)
 
 # API
 API_KEY: str = os.environ.get("API_KEY", "")
@@ -22,8 +30,8 @@ TELEGRAM_ENABLED: bool = os.environ.get("TELEGRAM_ENABLED", "false").lower() == 
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 # Machine identity
-MACHINE_NAME: str = os.environ.get("MACHINE_NAME", socket.gethostname())
-IS_HUB: bool = TELEGRAM_ENABLED  # The machine running the bot is the hub
+MACHINE_NAME: str = os.environ.get("MACHINE_NAME", _hostname)
+IS_HUB: bool = False  # set at runtime by leader election
 
 # Tailscale CLI path (macOS App Store uses the long path)
 _TAILSCALE_PATHS = [
@@ -59,10 +67,47 @@ PROJECT_MARKERS = [
 
 # Runtime dirs
 BASE_DIR = Path(__file__).parent
-SESSIONS_DIR = BASE_DIR / "sessions"
-LOGS_DIR = BASE_DIR / "logs"
 TEMPLATES_DIR = BASE_DIR / "templates"
-PAIRED_USERS_FILE = BASE_DIR / "paired_users.json"
+
+# Per-machine state (each machine has its own home dir)
+DATA_DIR = Path.home() / ".config" / "code-launcher"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Shared state for co-located machines (optional, on shared volume)
+SHARED_DIR = BASE_DIR / ".shared"
+
+SESSIONS_DIR = DATA_DIR / "sessions"
+LOGS_DIR = DATA_DIR / "logs"
+PAIRED_USERS_FILE = DATA_DIR / "paired_users.json"
 
 SESSIONS_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
+
+
+def set_hub_status(value):
+    # type: (bool) -> None
+    global IS_HUB
+    IS_HUB = value
+
+
+# --- One-time migration of legacy state files ---
+def _migrate_legacy_files():
+    import shutil
+    _files = ["paired_users.json", "machines.json", "settings.json"]
+    # Try both old locations: backend/<file> and backend/data/<hostname>/<file>
+    _old_dirs = [
+        BASE_DIR,
+        BASE_DIR / "data" / MACHINE_NAME,
+    ]
+    for name in _files:
+        new_path = DATA_DIR / name
+        if new_path.exists():
+            continue
+        for old_dir in _old_dirs:
+            old_path = old_dir / name
+            if old_path.exists():
+                shutil.copy2(str(old_path), str(new_path))
+                _logger.info(f"Migrated {old_path} -> {new_path}")
+                break
+
+_migrate_legacy_files()

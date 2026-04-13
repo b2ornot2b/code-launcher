@@ -3,11 +3,11 @@ set -e
 cd "$(dirname "$0")"
 
 echo "Creating virtual environment..."
-python3 -m venv .venv
+uv venv .venv
 source .venv/bin/activate
 
 echo "Installing dependencies..."
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 
 echo "Generating API key..."
 if [ ! -f .env ]; then

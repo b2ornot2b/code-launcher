@@ -6,12 +6,12 @@ import logging
 import os
 from pathlib import Path
 
-from config import BASE_DIR, API_KEY, MACHINE_NAME
+from config import DATA_DIR, API_KEY, MACHINE_NAME
 
 logger = logging.getLogger(__name__)
 
-_PAIRED_FLAG = BASE_DIR / ".hub_paired"
-_lock_path = BASE_DIR / ".hub_paired.lock"
+_PAIRED_FLAG = DATA_DIR / ".hub_paired"
+_lock_path = DATA_DIR / ".hub_paired.lock"
 
 
 def is_paired() -> bool:
