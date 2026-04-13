@@ -14,10 +14,10 @@ sprint run                                # Execute all tasks
 
 ## Project Structure
 - `backend/` — FastAPI server (main.py, config.py, auth.py)
-- `backend/routers/` — API endpoints (projects, sessions, system, power, scaffold, terminal)
-- `backend/services/` — Core logic (session_manager, terminal_manager, project_scanner, etc.)
-- `backend/tg_bot/` — Telegram bot (handlers, pairing, notifications)
-- `backend/templates/` — Scaffolding templates
+- `backend/routers/` — API endpoints (projects, sessions, system, power, scaffold, terminal, settings_api, telegram_ctrl)
+- `backend/services/` — Core logic (session_manager, terminal_manager, project_scanner, machine_registry, machine_client, discovery, hub_pairing, scaffolder, session_poller, cleanup, git_ops, process_manager, settings, system_info)
+- `backend/tg_bot/` — Telegram bot (bot, handlers, pairing)
+- `backend/templates/` — Scaffolding templates (android, cli_python, cloud_terraform, fastapi, hybrid, website)
 - `bin/sprint` — Sprint execution CLI
 
 ## Key Conventions
